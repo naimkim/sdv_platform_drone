@@ -5,8 +5,8 @@
 sudo apt install git -y
 
 # 사용자 정보 설정
-git config --global user.name "Kang Seokjun"
-git config --global user.email "owljun2@gmail.com"
+git config --global user.name "username"
+git config --global user.email "emailId@gmail.com"
 
 # 확인
 git config --list
@@ -30,7 +30,7 @@ git push -u origin main
 # Directory
 
 ```text
-/home/seokjunkang/
+/home/username/
 
 └── dev/
     └── sdv_platform_ws/

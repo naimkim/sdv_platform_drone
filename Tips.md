@@ -30,7 +30,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   <member_of_group>rosidl_interface_packages</member_of_group>
 ```
 
-## 생성
+## Package 생성
 
 ```bash
 cd ./src # src 폴더로 이동
