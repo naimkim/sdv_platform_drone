@@ -187,7 +187,7 @@ Vehicle Manager
 
 ## 5. Topic 설계
 
-### /battery/status
+### /ecu/battery/status
 
 #### Publisher
 
