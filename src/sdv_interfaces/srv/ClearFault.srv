@@ -1,0 +1,6 @@
+#Request
+string fault_name
+
+---
+#Result
+bool success

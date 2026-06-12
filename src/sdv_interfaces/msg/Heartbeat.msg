@@ -1,0 +1,2 @@
+string ecu_name
+uint64 timestamp
