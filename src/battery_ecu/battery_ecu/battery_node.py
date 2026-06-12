@@ -57,7 +57,7 @@ class BatteryNode(Node):
 
         if DEBUG :
             self.get_logger().info(
-                f'SOC={msg.soc:.1f}%\nVOLTAGE={msg.voltage:.1f}%\nCURRENT={msg.current:.1f}%'
+                f'SOC={msg.soc:.1f}%\nVOLTAGE={msg.voltage:.1f}V\nCURRENT={msg.current:.1f}A'
             )
 
         self.soc -= 1.0

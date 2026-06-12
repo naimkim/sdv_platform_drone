@@ -62,7 +62,7 @@ class VehicleManagerNode(Node):
                 )
         if DEBUG :
             self.get_logger().info(
-                f'Received SOC={msg.soc:.1f}%\nReceived VOLTAGE={msg.voltage:.1f}%\nRecevice CURRENT={msg.current:.1f}%'
+                f'Received SOC={msg.soc:.1f}%\nReceived VOLTAGE={msg.voltage:.1f}V\nRecevice CURRENT={msg.current:.1f}A'
             )
 # ===================
 # STUB
