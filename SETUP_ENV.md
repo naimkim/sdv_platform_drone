@@ -247,3 +247,117 @@ ros2 topic pub
 # Interface 조회
 ros2 interface list
 ```
+
+
+# venv & python libs
+
+## Python venv 생성
+
+ROS2 Python 패키지를 개발할 때는 워크스페이스 루트에 `.venv`를 두고 사용한다.
+
+```bash
+cd ~/dev/sdv_platform_ws
+
+sudo apt update
+sudo apt install python3-venv python3-pip -y
+
+python3 -m venv .venv --system-site-packages
+source .venv/bin/activate
+```
+
+`--system-site-packages`를 붙이는 이유는 venv 안에서도 apt로 설치된 ROS2 Python 패키지(`rclpy`, message package 등)를 그대로 import하기 위해서다.
+
+확인:
+
+```bash
+python3 -c "import rclpy; print('rclpy ok')"
+```
+
+---
+
+## GUI 라이브러리 설치
+
+현재 `sdv_test_gui`는 PyQt5 기반이다.
+
+권장 설치:
+
+```bash
+sudo apt install python3-pyqt5 -y
+```
+
+확인:
+
+```bash
+python3 -c "import PyQt5; print('PyQt5 ok')"
+```
+
+pip로 설치해야 하는 경우:
+
+```bash
+source .venv/bin/activate
+pip install PyQt5
+```
+
+---
+
+## Workspace 빌드
+
+```bash
+cd ~/dev/sdv_platform_ws
+source /opt/ros/jazzy/setup.bash
+source .venv/bin/activate
+
+colcon build
+source install/setup.bash
+```
+
+특정 패키지만 빌드:
+
+```bash
+colcon build --packages-select sdv_test_gui
+source install/setup.bash
+```
+
+---
+
+## GUI 실행
+
+터미널 1:
+
+```bash
+cd ~/dev/sdv_platform_ws
+source /opt/ros/jazzy/setup.bash
+source .venv/bin/activate
+source install/setup.bash
+
+ros2 run vehicle_manager vehicle_manager_node
+```
+
+터미널 2:
+
+```bash
+cd ~/dev/sdv_platform_ws
+source /opt/ros/jazzy/setup.bash
+source .venv/bin/activate
+source install/setup.bash
+
+ros2 run sdv_test_gui test_gui_node
+```
+
+---
+
+## 매번 source 하기 귀찮을 때
+
+아래 내용을 `~/.bashrc`에 추가하면 새 터미널에서 ROS2 기본 환경이 자동으로 잡힌다.
+
+```bash
+source /opt/ros/jazzy/setup.bash
+```
+
+워크스페이스와 venv는 프로젝트마다 다를 수 있으므로, 작업 시작할 때 워크스페이스 루트에서 직접 실행하는 것을 권장한다.
+
+```bash
+cd ~/dev/sdv_platform_ws
+source .venv/bin/activate
+source install/setup.bash
+```

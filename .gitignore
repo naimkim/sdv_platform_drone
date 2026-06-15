@@ -1,91 +1,35 @@
-# ROS2 Workspace
-
-# Build outputs
-
+# ROS2 workspace outputs
 build/
 install/
 log/
-
-# Colcon metadata
-
 .colcon/
 
-# VSCode
-
-.vscode/
-
-# CLion
-
-.idea/
-
 # Python
-
-**pycache**/
+__pycache__/
+**/__pycache__/
 *.pyc
-*.pyo
-*.pyd
-
-# C/C++
-
-*.o
-*.obj
-*.so
-*.a
-*.lib
-*.dll
-*.exe
-
-# Coverage
-
-coverage/
-*.gcda
-*.gcno
-*.gcov
-
-# CMake
-
-CMakeCache.txt
-CMakeFiles/
-cmake_install.cmake
-Makefile
-
-# ROS2 generated files
-
 *.egg-info/
 *.egg
 
-# Launch temp files
-
+# Logs
 *.log
 
-# OS files
-
-.DS_Store
-Thumbs.db
-
-# Environment
-
+# Local environment
+.venv/
+venv/
 .env
 .env.*
 
-# JetBrains
-
+# Editors
+.vscode/
 .idea/
-
-# Qt Creator
-
-CMakeLists.txt.user
-
-# Swap files
-
 *.swp
 *.swo
 
-# ROS bags (optional)
+# OS files
+.DS_Store
+Thumbs.db
 
+# ROS bag files
 *.db3
 *.mcap
-
-# Generated documentation
-
-docs/build/
