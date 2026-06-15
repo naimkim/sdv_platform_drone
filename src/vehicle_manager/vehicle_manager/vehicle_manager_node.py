@@ -6,7 +6,7 @@ from sdv_interfaces.msg import Heartbeat
 from sdv_interfaces.msg import VehicleState
 from enum import IntEnum
 
-DEBUG_VEHICLE_MANAGER = False
+DEBUG_VEHICLE_MANAGER = True
 DEBUG_BATTERY_MSG = False
 DEBUG_HEARTBEAT_MSG = True
 DEBUG_TASK = False

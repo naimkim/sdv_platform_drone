@@ -341,7 +341,7 @@ source /opt/ros/jazzy/setup.bash
 source .venv/bin/activate
 source install/setup.bash
 
-ros2 run sdv_test_gui test_gui_node
+ros2 run sdv_test_gui test_gui_node 
 ```
 
 ---
