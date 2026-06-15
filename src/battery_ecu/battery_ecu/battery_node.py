@@ -7,7 +7,7 @@ from sdv_interfaces.msg import VehicleState
 
 from datetime import datetime
 
-DEBUG_BATTERY_ECU = False
+DEBUG_BATTERY_ECU = True
 DEBUG_VEHICLE_STATE_MSG = True
 DEBUG_TASK = False
 
@@ -52,8 +52,8 @@ class BatteryNode(Node):
 
         # =============================
         # Create Task (Periodically)
-        self.timer_1ms = self.create_timer(0.001, self.Task_1ms)
-        self.timer_10ms = self.create_timer(0.01, self.Task_10ms)
+        # self.timer_1ms = self.create_timer(0.001, self.Task_1ms)
+        # self.timer_10ms = self.create_timer(0.01, self.Task_10ms)
         self.timer_100ms = self.create_timer(0.1, self.Task_100ms)
         self.timer_1000ms = self.create_timer(1.0, self.Task_1000ms)
         # =============================
