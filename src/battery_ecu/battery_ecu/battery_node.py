@@ -8,6 +8,7 @@ from sdv_interfaces.msg import VehicleState
 from datetime import datetime
 
 DEBUG = True
+DEBUG_TASK = False
 
 class BatteryNode(Node):
     
@@ -19,6 +20,11 @@ class BatteryNode(Node):
         self.soc = 100.0
         self.voltage = 400.0
         self.current = 10.0
+        if DEBUG_TASK:
+            self.cnt_1ms = 0
+            self.cnt_10ms = 0
+            self.cnt_100ms = 0
+            self.cnt_1000ms = 0
         # =============================
 
         # =============================
@@ -45,10 +51,10 @@ class BatteryNode(Node):
 
         # =============================
         # Create Task (Periodically)
-        self.timer_1000ms = self.create_timer(
-            1.0,
-            self.Task_1000ms
-        )
+        self.timer_1ms = self.create_timer(0.001, self.Task_1ms)
+        self.timer_10ms = self.create_timer(0.01, self.Task_10ms)
+        self.timer_100ms = self.create_timer(0.1, self.Task_100ms)
+        self.timer_1000ms = self.create_timer(1.0, self.Task_1000ms)
         # =============================
 
         if DEBUG :
@@ -65,7 +71,22 @@ class BatteryNode(Node):
 
 # ===================
 # Task Implementation
+    def Task_1ms(self):
+        if DEBUG_TASK:
+            self.cnt_1ms += 1
+            self.get_logger().info(f'Task_1ms , executed {self.cnt_1ms}')
+    def Task_10ms(self):
+        if DEBUG_TASK:
+            self.cnt_10ms += 1
+            self.get_logger().info(f'Task_10ms , executed {self.cnt_10ms}')
+    def Task_100ms(self):
+        if DEBUG_TASK:
+            self.cnt_100ms += 1
+            self.get_logger().info(f'Task_100ms , executed {self.cnt_100ms}')
     def Task_1000ms(self):
+        if DEBUG_TASK:
+            self.cnt_1000ms += 1
+            self.get_logger().info(f'Task_1000ms , executed {self.cnt_1000ms}')
         hb_msg = Heartbeat()
         bs_msg = BatteryStatus()
 
