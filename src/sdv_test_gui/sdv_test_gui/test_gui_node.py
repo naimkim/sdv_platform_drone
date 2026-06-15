@@ -10,6 +10,7 @@ from rclpy.node import Node
 from sdv_interfaces.msg import BatteryStatus
 from sdv_interfaces.msg import DiagnosticEvent
 from sdv_interfaces.msg import Heartbeat
+from sdv_interfaces.msg import ObstacleInfo
 from sdv_interfaces.msg import VehicleState
 
 from PyQt5.QtCore import QObject, Qt, QTimer, pyqtSignal
@@ -63,6 +64,7 @@ class GuiSignals(QObject):
     node_list_received = pyqtSignal(object)
     vehicle_state_received = pyqtSignal(int)
     battery_status_received = pyqtSignal(float, float, float)
+    obstacle_info_received = pyqtSignal(bool, float, float)
     heartbeat_received = pyqtSignal(str, str, float)
     diagnostic_event_received = pyqtSignal(str, int, str, str)
 
@@ -107,6 +109,13 @@ class SdvTestGuiRosNode(Node):
             10
         )
 
+        self.obstacle_info_sub = self.create_subscription(
+            ObstacleInfo,
+            '/ecu/obstacle/info',
+            self.obstacle_info_callback,
+            10
+        )
+
         self.diagnostic_event_sub = self.create_subscription(
             DiagnosticEvent,
             '/ecu/diagnostics/event',
@@ -134,6 +143,13 @@ class SdvTestGuiRosNode(Node):
             msg.ecu_name,
             format_timestamp_ns(msg.timestamp),
             time.monotonic()
+        )
+
+    def obstacle_info_callback(self, msg):
+        self.gui_signals.obstacle_info_received.emit(
+            bool(msg.detected),
+            float(msg.distance),
+            float(msg.angle)
         )
 
     def diagnostic_event_callback(self, msg):
@@ -200,6 +216,10 @@ class MainWindow(QMainWindow):
         self.battery_voltage_label = QLabel('-')
         self.battery_current_label = QLabel('-')
 
+        self.obstacle_detected_label = QLabel('-')
+        self.obstacle_distance_label = QLabel('-')
+        self.obstacle_angle_label = QLabel('-')
+
         self.heartbeat_table = QTableWidget(len(ECU_NAMES), 3)
         self.heartbeat_table.setHorizontalHeaderLabels([
             'ECU',
@@ -261,6 +281,7 @@ class MainWindow(QMainWindow):
         self.gui_signals.node_list_received.connect(self.update_node_list)
         self.gui_signals.vehicle_state_received.connect(self.update_vehicle_state)
         self.gui_signals.battery_status_received.connect(self.update_battery_status)
+        self.gui_signals.obstacle_info_received.connect(self.update_obstacle_info)
         self.gui_signals.heartbeat_received.connect(self.update_heartbeat_status)
         self.gui_signals.diagnostic_event_received.connect(
             self.add_diagnostic_event
@@ -278,6 +299,7 @@ class MainWindow(QMainWindow):
         monitor_layout.addWidget(self.build_node_monitor_group())
         monitor_layout.addWidget(self.build_vehicle_state_group())
         monitor_layout.addWidget(self.build_battery_monitor_group())
+        monitor_layout.addWidget(self.build_obstacle_monitor_group())
         monitor_layout.addWidget(self.build_heartbeat_monitor_group())
         monitor_layout.addWidget(self.build_diagnostic_event_group())
 
@@ -310,6 +332,14 @@ class MainWindow(QMainWindow):
         layout.addRow('SOC', self.battery_soc_label)
         layout.addRow('Voltage', self.battery_voltage_label)
         layout.addRow('Current', self.battery_current_label)
+        return group
+
+    def build_obstacle_monitor_group(self):
+        group = QGroupBox('Obstacle Info')
+        layout = QFormLayout(group)
+        layout.addRow('Detected', self.obstacle_detected_label)
+        layout.addRow('Distance', self.obstacle_distance_label)
+        layout.addRow('Angle', self.obstacle_angle_label)
         return group
 
     def build_heartbeat_monitor_group(self):
@@ -360,6 +390,11 @@ class MainWindow(QMainWindow):
         self.battery_soc_label.setText(f'{soc:.1f} %')
         self.battery_voltage_label.setText(f'{voltage:.1f} V')
         self.battery_current_label.setText(f'{current:.1f} A')
+
+    def update_obstacle_info(self, detected, distance, angle):
+        self.obstacle_detected_label.setText('YES' if detected else 'NO')
+        self.obstacle_distance_label.setText(f'{distance:.2f} m')
+        self.obstacle_angle_label.setText(f'{angle:.1f} deg')
 
     def update_heartbeat_status(self, ecu_name, timestamp_text, received_monotonic):
         if ecu_name not in self.heartbeat_rows:

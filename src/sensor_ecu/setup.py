@@ -24,6 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'sensor_node = sensor_ecu.sensor_node:main',
         ],
     },
 )
