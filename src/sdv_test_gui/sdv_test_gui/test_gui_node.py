@@ -1,12 +1,14 @@
 import sys
 import threading
 import time
+from datetime import datetime
 
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 
 from sdv_interfaces.msg import BatteryStatus
+from sdv_interfaces.msg import DiagnosticEvent
 from sdv_interfaces.msg import Heartbeat
 from sdv_interfaces.msg import VehicleState
 
@@ -30,6 +32,8 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+MAIN_WINDOW_WIDTH = 1100
+MAIN_WINDOW_HEIGHT = 760
 
 ECU_NAMES = (
     'battery_ecu',
@@ -47,12 +51,20 @@ VEHICLE_STATE_NAMES = {
     VehicleState.EMERGENCY: 'EMERGENCY',
 }
 
+DIAGNOSTIC_SEVERITY_NAMES = {
+    0: 'INFO',
+    1: 'WARN',
+    2: 'ERROR',
+    3: 'CRITICAL',
+}
+
 
 class GuiSignals(QObject):
     node_list_received = pyqtSignal(object)
     vehicle_state_received = pyqtSignal(int)
     battery_status_received = pyqtSignal(float, float, float)
-    heartbeat_received = pyqtSignal(str, int, float)
+    heartbeat_received = pyqtSignal(str, str, float)
+    diagnostic_event_received = pyqtSignal(str, int, str, str)
 
 
 class SdvTestGuiRosNode(Node):
@@ -95,6 +107,13 @@ class SdvTestGuiRosNode(Node):
             10
         )
 
+        self.diagnostic_event_sub = self.create_subscription(
+            DiagnosticEvent,
+            '/ecu/diagnostics/event',
+            self.diagnostic_event_callback,
+            10
+        )
+
         self.node_monitor_timer = self.create_timer(
             1.0,
             self.publish_node_list_to_gui
@@ -113,8 +132,16 @@ class SdvTestGuiRosNode(Node):
     def heartbeat_callback(self, msg):
         self.gui_signals.heartbeat_received.emit(
             msg.ecu_name,
-            int(msg.timestamp),
+            format_timestamp_ns(msg.timestamp),
             time.monotonic()
+        )
+
+    def diagnostic_event_callback(self, msg):
+        self.gui_signals.diagnostic_event_received.emit(
+            msg.ecu_name,
+            int(msg.severity),
+            msg.description,
+            format_wall_time()
         )
 
     def publish_node_list_to_gui(self):
@@ -145,7 +172,7 @@ class MainWindow(QMainWindow):
         self.last_heartbeat_times = {}
 
         self.setWindowTitle('SDV Test GUI')
-        self.resize(900, 560)
+        self.resize(MAIN_WINDOW_WIDTH, MAIN_WINDOW_HEIGHT)
 
         self.create_monitor_widgets()
         self.create_simulator_widgets()
@@ -177,7 +204,7 @@ class MainWindow(QMainWindow):
         self.heartbeat_table.setHorizontalHeaderLabels([
             'ECU',
             'Last RX',
-            'Timestamp',
+            'Sent Time',
         ])
         self.heartbeat_table.verticalHeader().setVisible(False)
         self.heartbeat_table.horizontalHeader().setSectionResizeMode(
@@ -191,6 +218,19 @@ class MainWindow(QMainWindow):
             self.heartbeat_table.setItem(row, 1, QTableWidgetItem('never'))
             self.heartbeat_table.setItem(row, 2, QTableWidgetItem('-'))
             self.heartbeat_rows[ecu_name] = row
+
+        self.diagnostic_event_table = QTableWidget(0, 4)
+        self.diagnostic_event_table.setHorizontalHeaderLabels([
+            'RX',
+            'ECU',
+            'Severity',
+            'Description',
+        ])
+        self.diagnostic_event_table.verticalHeader().setVisible(False)
+        self.diagnostic_event_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.Stretch
+        )
+        self.diagnostic_event_table.setEditTriggers(QTableWidget.NoEditTriggers)
 
     def create_simulator_widgets(self):
         self.soc_slider = QSlider(Qt.Horizontal)
@@ -222,6 +262,9 @@ class MainWindow(QMainWindow):
         self.gui_signals.vehicle_state_received.connect(self.update_vehicle_state)
         self.gui_signals.battery_status_received.connect(self.update_battery_status)
         self.gui_signals.heartbeat_received.connect(self.update_heartbeat_status)
+        self.gui_signals.diagnostic_event_received.connect(
+            self.add_diagnostic_event
+        )
 
         self.soc_slider.valueChanged.connect(self.update_soc_label)
         self.publish_battery_button.clicked.connect(self.publish_battery)
@@ -236,6 +279,7 @@ class MainWindow(QMainWindow):
         monitor_layout.addWidget(self.build_vehicle_state_group())
         monitor_layout.addWidget(self.build_battery_monitor_group())
         monitor_layout.addWidget(self.build_heartbeat_monitor_group())
+        monitor_layout.addWidget(self.build_diagnostic_event_group())
 
         simulator_panel = QWidget()
         simulator_layout = QVBoxLayout(simulator_panel)
@@ -272,6 +316,12 @@ class MainWindow(QMainWindow):
         group = QGroupBox('Heartbeat Monitor')
         layout = QVBoxLayout(group)
         layout.addWidget(self.heartbeat_table)
+        return group
+
+    def build_diagnostic_event_group(self):
+        group = QGroupBox('Diagnostic Events')
+        layout = QVBoxLayout(group)
+        layout.addWidget(self.diagnostic_event_table)
         return group
 
     def build_battery_simulator_group(self):
@@ -311,7 +361,7 @@ class MainWindow(QMainWindow):
         self.battery_voltage_label.setText(f'{voltage:.1f} V')
         self.battery_current_label.setText(f'{current:.1f} A')
 
-    def update_heartbeat_status(self, ecu_name, timestamp, received_monotonic):
+    def update_heartbeat_status(self, ecu_name, timestamp_text, received_monotonic):
         if ecu_name not in self.heartbeat_rows:
             row = self.heartbeat_table.rowCount()
             self.heartbeat_table.insertRow(row)
@@ -324,7 +374,7 @@ class MainWindow(QMainWindow):
 
         row = self.heartbeat_rows[ecu_name]
         self.heartbeat_table.item(row, 1).setText('0.0 s ago')
-        self.heartbeat_table.item(row, 2).setText(str(timestamp))
+        self.heartbeat_table.item(row, 2).setText(timestamp_text)
 
     def refresh_heartbeat_age(self):
         now = time.monotonic()
@@ -345,6 +395,35 @@ class MainWindow(QMainWindow):
                 age_item.setBackground(Qt.red)
             else:
                 age_item.setBackground(Qt.green)
+
+    def add_diagnostic_event(
+        self,
+        ecu_name,
+        severity,
+        description,
+        received_time_text
+    ):
+        row = 0
+        self.diagnostic_event_table.insertRow(row)
+
+        severity_name = DIAGNOSTIC_SEVERITY_NAMES.get(
+            severity,
+            f'UNKNOWN({severity})'
+        )
+
+        self.diagnostic_event_table.setItem(
+            row,
+            0,
+            QTableWidgetItem(received_time_text)
+        )
+        self.diagnostic_event_table.setItem(row, 1, QTableWidgetItem(ecu_name))
+        self.diagnostic_event_table.setItem(row, 2, QTableWidgetItem(severity_name))
+        self.diagnostic_event_table.setItem(row, 3, QTableWidgetItem(description))
+
+        while self.diagnostic_event_table.rowCount() > 20:
+            self.diagnostic_event_table.removeRow(
+                self.diagnostic_event_table.rowCount() - 1
+            )
 
     def update_soc_label(self, value):
         self.soc_value_label.setText(f'{value} %')
@@ -367,6 +446,26 @@ def spin_ros_node(node):
         rclpy.spin(node)
     except ExternalShutdownException:
         pass
+
+
+def format_timestamp_ns(timestamp_ns):
+    timestamp_ns = int(timestamp_ns) & 0xFFFFFFFFFFFFFFFF
+
+    if timestamp_ns == 0:
+        return '-'
+
+    timestamp_sec = timestamp_ns / 1_000_000_000.0
+
+    try:
+        return datetime.fromtimestamp(timestamp_sec).strftime(
+            '%H:%M:%S.%f'
+        )[:-3]
+    except (OverflowError, OSError, ValueError):
+        return f'{timestamp_sec:.3f} s'
+
+
+def format_wall_time():
+    return datetime.now().strftime('%H:%M:%S.%f')[:-3]
 
 
 def main(args=None):
