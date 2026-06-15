@@ -6,10 +6,15 @@ from sdv_interfaces.msg import Heartbeat
 from sdv_interfaces.msg import VehicleState
 from enum import IntEnum
 
+# Node Config VARs
 DEBUG_VEHICLE_MANAGER = True
 DEBUG_BATTERY_MSG = False
 DEBUG_HEARTBEAT_MSG = True
 DEBUG_TASK = False
+TASK_USE_1MS = False
+TASK_USE_10MS = False
+TASK_USE_100MS = True
+TASK_USE_1000MS = True
 
 class VehicleState_e(IntEnum):
     INIT = 0
@@ -86,10 +91,14 @@ class VehicleManagerNode(Node):
         
         # =============================
         # Create Task (Periodically)
-        # self.timer_1ms = self.create_timer(0.001, self.Task_1ms)
-        # self.timer_10ms = self.create_timer(0.01, self.Task_10ms)
-        self.timer_100ms = self.create_timer(0.1, self.Task_100ms)
-        self.timer_1000ms = self.create_timer(1.0, self.Task_1000ms)
+        if TASK_USE_1MS:
+            self.timer_1ms = self.create_timer(0.001, self.Task_1ms)
+        if TASK_USE_10MS:
+            self.timer_10ms = self.create_timer(0.01, self.Task_10ms)
+        if TASK_USE_100MS:
+            self.timer_100ms = self.create_timer(0.1, self.Task_100ms)
+        if TASK_USE_1000MS:
+            self.timer_1000ms = self.create_timer(1.0, self.Task_1000ms)
         # =============================        
 
         if DEBUG_VEHICLE_MANAGER : 
