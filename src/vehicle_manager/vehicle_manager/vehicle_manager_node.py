@@ -6,7 +6,9 @@ from sdv_interfaces.msg import Heartbeat
 from sdv_interfaces.msg import VehicleState
 from enum import IntEnum
 
-DEBUG = True
+DEBUG_VEHICLE_MANAGER = False
+DEBUG_BATTERY_MSG = False
+DEBUG_HEARTBEAT_MSG = True
 DEBUG_TASK = False
 
 class VehicleState_e(IntEnum):
@@ -90,7 +92,7 @@ class VehicleManagerNode(Node):
         self.timer_1000ms = self.create_timer(1.0, self.Task_1000ms)
         # =============================        
 
-        if DEBUG : 
+        if DEBUG_VEHICLE_MANAGER : 
             self.get_logger().info(
                 'Vehicle Manager Started'
             )
@@ -104,10 +106,11 @@ class VehicleManagerNode(Node):
                 self.change_state(
                     VehicleState_e.LOW_BATTERY
                 )
-        if DEBUG :
+        if DEBUG_BATTERY_MSG :
             self.get_logger().info(
                 f'Received SOC={msg.soc:.1f}%\nReceived VOLTAGE={msg.voltage:.1f}V\nRecevice CURRENT={msg.current:.1f}A'
             )
+
     def heart_beat_callback(self,msg):
         ecu_name = msg.ecu_name 
 
@@ -118,7 +121,7 @@ class VehicleManagerNode(Node):
         self.ecu_health[ecu_name]["last_seen_ns"] = self.get_clock().now().nanoseconds
         self.ecu_health[ecu_name]["alive"] = True
 
-        if DEBUG :
+        if DEBUG_HEARTBEAT_MSG :
             self.get_logger().info(
                 f'HeartBeat Received={msg.ecu_name}, TimeStamp={msg.timestamp}'
             )
@@ -173,7 +176,7 @@ class VehicleManagerNode(Node):
     def change_state(self, new_state):
         if self.state == new_state:
             return
-        if DEBUG :
+        if DEBUG_VEHICLE_MANAGER :
             self.get_logger().info(
                 f'State Change : {self.state.name} -> {new_state.name}'
             )
@@ -204,13 +207,13 @@ class VehicleManagerNode(Node):
                 health["alive"] = False
 
                 if health["required"]:
-                    if DEBUG:
+                    if DEBUG_HEARTBEAT_MSG:
                         self.get_logger().error(
                             f'Required ECU timeout : {ecu_name}, elapsed={elapsed_sec:.1f}s'
                         )
                     self.change_state(VehicleState_e.FAULT)
                     return False
-                if DEBUG:
+                if DEBUG_HEARTBEAT_MSG:
                     self.get_logger().warn(
                         f"Optional ECU timeout: {ecu_name}, elapsed={elapsed_sec:.1f}s"
                     )

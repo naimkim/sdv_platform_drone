@@ -7,7 +7,8 @@ from sdv_interfaces.msg import VehicleState
 
 from datetime import datetime
 
-DEBUG = True
+DEBUG_BATTERY_ECU = False
+DEBUG_VEHICLE_STATE_MSG = True
 DEBUG_TASK = False
 
 class BatteryNode(Node):
@@ -57,13 +58,13 @@ class BatteryNode(Node):
         self.timer_1000ms = self.create_timer(1.0, self.Task_1000ms)
         # =============================
 
-        if DEBUG :
+        if DEBUG_BATTERY_ECU :
             self.get_logger().info('Battery ECU Started')
 
 # ===================
 # CallBacks            
     def vehicle_status_callback(self, msg):
-        if DEBUG:
+        if DEBUG_VEHICLE_STATE_MSG:
             self.get_logger().info(
                 f'Current Vehicle State = {msg.state}'
             )
@@ -100,7 +101,7 @@ class BatteryNode(Node):
         self.heart_beat_publisher_.publish(hb_msg)
         self.battery_status_publisher_.publish(bs_msg)
 
-        if DEBUG :
+        if DEBUG_BATTERY_ECU :
             self.get_logger().info(
                 f'SOC={bs_msg.soc:.1f}%\nVOLTAGE={bs_msg.voltage:.1f}V\nCURRENT={bs_msg.current:.1f}A'
             )
