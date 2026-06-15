@@ -117,7 +117,7 @@ class BatteryNode(Node):
             self.soc = 100.0
         if self.voltage < 0.0:
             self.voltage = 400.0
-        if self.current < 0.0:
+        if self.current > 100.0:
             self.current = 10.0
 # ===================
 
