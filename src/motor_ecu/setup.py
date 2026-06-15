@@ -24,6 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'motor_node = motor_ecu.motor_node:main',
         ],
     },
 )

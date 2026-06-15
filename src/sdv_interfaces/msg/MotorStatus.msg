@@ -1,0 +1,5 @@
+float32 target_linear
+float32 current_linear
+float32 target_angular
+float32 current_angular
+bool enabled

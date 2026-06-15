@@ -29,6 +29,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/BatteryStatus.msg"
   "msg/DiagnosticEvent.msg"
   "msg/Heartbeat.msg"
+  "msg/MotorStatus.msg"
   "msg/ObstacleInfo.msg"
   "msg/SecurityEvent.msg"
   "msg/VehicleState.msg"
@@ -36,6 +37,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GetFaultInfo.srv"
   "srv/ClearFault.srv"
   "srv/CalibrateSensor.srv"
+  "srv/StartMission.srv"
 
   "action/GoToTarget.action"
   "action/ReturnHome.action"

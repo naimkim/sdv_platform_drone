@@ -4,6 +4,7 @@ from rclpy.node import Node
 from sdv_interfaces.msg import BatteryStatus
 from sdv_interfaces.msg import Heartbeat
 from sdv_interfaces.msg import VehicleState
+from sdv_interfaces.srv import StartMission
 from enum import IntEnum
 
 # Node Config VARs
@@ -32,6 +33,8 @@ class VehicleManagerNode(Node):
         # Members
         self.state = VehicleState_e.INIT
         self.received_initial_battery_status = False
+        self.mission_duration_sec = 5.0
+        self.mission_started_ns = None
 
         self.ecu_health = {
             "battery_ecu": {
@@ -87,6 +90,12 @@ class VehicleManagerNode(Node):
             self.heart_beat_callback,
             10
         )
+
+        self.start_mission_service = self.create_service(
+            StartMission,
+            '/ecu/vehicle/start_mission',
+            self.start_mission_callback
+        )
         # =============================
         
         # =============================
@@ -134,6 +143,23 @@ class VehicleManagerNode(Node):
             self.get_logger().info(
                 f'HeartBeat Received={msg.ecu_name}, TimeStamp={msg.timestamp}'
             )
+
+    def start_mission_callback(self, request, response):
+        if self.state == VehicleState_e.READY:
+            self.mission_started_ns = self.get_clock().now().nanoseconds
+            self.change_state(VehicleState_e.MISSION)
+            response.success = True
+            response.message = 'Mission started'
+            return response
+
+        if self.state == VehicleState_e.MISSION:
+            response.success = True
+            response.message = 'Mission already running'
+            return response
+
+        response.success = False
+        response.message = f'Cannot start mission from {self.state.name}'
+        return response
 # ===================
 # STUB
     def fault_callback(self,msg):
@@ -173,6 +199,12 @@ class VehicleManagerNode(Node):
         if self.state == VehicleState_e.INIT:
             if self.is_system_ready():
                 self.change_state(VehicleState_e.READY)
+        elif self.state == VehicleState_e.MISSION:
+            if self.is_mission_complete():
+                self.mission_started_ns = None
+                self.change_state(VehicleState_e.READY)
+
+        self.publish_vehicle_state()
 # ===================
 
 # ===================    
@@ -185,6 +217,8 @@ class VehicleManagerNode(Node):
     def change_state(self, new_state):
         if self.state == new_state:
             return
+        if self.state == VehicleState_e.MISSION and new_state != VehicleState_e.MISSION:
+            self.mission_started_ns = None
         if DEBUG_VEHICLE_MANAGER :
             self.get_logger().info(
                 f'State Change : {self.state.name} -> {new_state.name}'
@@ -227,6 +261,14 @@ class VehicleManagerNode(Node):
                         f"Optional ECU timeout: {ecu_name}, elapsed={elapsed_sec:.1f}s"
                     )
         return True
+
+    def is_mission_complete(self):
+        if self.mission_started_ns is None:
+            return False
+
+        now_ns = self.get_clock().now().nanoseconds
+        elapsed_sec = (now_ns - self.mission_started_ns) / 1_000_000_000.0
+        return elapsed_sec >= self.mission_duration_sec
 # ===================
 
 def main(args=None):

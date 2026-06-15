@@ -10,8 +10,10 @@ from rclpy.node import Node
 from sdv_interfaces.msg import BatteryStatus
 from sdv_interfaces.msg import DiagnosticEvent
 from sdv_interfaces.msg import Heartbeat
+from sdv_interfaces.msg import MotorStatus
 from sdv_interfaces.msg import ObstacleInfo
 from sdv_interfaces.msg import VehicleState
+from sdv_interfaces.srv import StartMission
 
 from PyQt5.QtCore import QObject, Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
@@ -65,8 +67,10 @@ class GuiSignals(QObject):
     vehicle_state_received = pyqtSignal(int)
     battery_status_received = pyqtSignal(float, float, float)
     obstacle_info_received = pyqtSignal(bool, float, float)
+    motor_status_received = pyqtSignal(float, float, float, float, bool)
     heartbeat_received = pyqtSignal(str, str, float)
     diagnostic_event_received = pyqtSignal(str, int, str, str)
+    service_result_received = pyqtSignal(str, bool, str)
 
 
 class SdvTestGuiRosNode(Node):
@@ -86,6 +90,11 @@ class SdvTestGuiRosNode(Node):
             Heartbeat,
             '/ecu/heartbeat',
             10
+        )
+
+        self.start_mission_client = self.create_client(
+            StartMission,
+            '/ecu/vehicle/start_mission'
         )
 
         self.vehicle_state_sub = self.create_subscription(
@@ -113,6 +122,13 @@ class SdvTestGuiRosNode(Node):
             ObstacleInfo,
             '/ecu/obstacle/info',
             self.obstacle_info_callback,
+            10
+        )
+
+        self.motor_status_sub = self.create_subscription(
+            MotorStatus,
+            '/ecu/motor/status',
+            self.motor_status_callback,
             10
         )
 
@@ -152,6 +168,15 @@ class SdvTestGuiRosNode(Node):
             float(msg.angle)
         )
 
+    def motor_status_callback(self, msg):
+        self.gui_signals.motor_status_received.emit(
+            float(msg.target_linear),
+            float(msg.current_linear),
+            float(msg.target_angular),
+            float(msg.current_angular),
+            bool(msg.enabled)
+        )
+
     def diagnostic_event_callback(self, msg):
         self.gui_signals.diagnostic_event_received.emit(
             msg.ecu_name,
@@ -176,6 +201,34 @@ class SdvTestGuiRosNode(Node):
         msg.ecu_name = ecu_name
         msg.timestamp = self.get_clock().now().nanoseconds
         self.heartbeat_pub.publish(msg)
+
+    def request_start_mission(self):
+        if not self.start_mission_client.service_is_ready():
+            self.gui_signals.service_result_received.emit(
+                'Start Mission',
+                False,
+                'Service not available'
+            )
+            return
+
+        request = StartMission.Request()
+        future = self.start_mission_client.call_async(request)
+        future.add_done_callback(self.start_mission_response_callback)
+
+    def start_mission_response_callback(self, future):
+        try:
+            response = future.result()
+            self.gui_signals.service_result_received.emit(
+                'Start Mission',
+                bool(response.success),
+                response.message
+            )
+        except Exception as exc:
+            self.gui_signals.service_result_received.emit(
+                'Start Mission',
+                False,
+                str(exc)
+            )
 
 
 class MainWindow(QMainWindow):
@@ -209,7 +262,7 @@ class MainWindow(QMainWindow):
     def create_monitor_widgets(self):
         self.node_list = QListWidget()
 
-        self.state_label = QLabel('INIT')
+        self.state_label = QLabel('NO DATA')
         self.state_label.setStyleSheet('font-size: 24px; font-weight: 600;')
 
         self.battery_soc_label = QLabel('-')
@@ -219,6 +272,14 @@ class MainWindow(QMainWindow):
         self.obstacle_detected_label = QLabel('-')
         self.obstacle_distance_label = QLabel('-')
         self.obstacle_angle_label = QLabel('-')
+
+        self.motor_enabled_label = QLabel('-')
+        self.motor_target_linear_label = QLabel('-')
+        self.motor_current_linear_label = QLabel('-')
+        self.motor_target_angular_label = QLabel('-')
+        self.motor_current_angular_label = QLabel('-')
+
+        self.service_result_label = QLabel('-')
 
         self.heartbeat_table = QTableWidget(len(ECU_NAMES), 3)
         self.heartbeat_table.setHorizontalHeaderLabels([
@@ -270,6 +331,7 @@ class MainWindow(QMainWindow):
         self.current_spin.setSuffix(' A')
 
         self.publish_battery_button = QPushButton('Publish Battery')
+        self.start_mission_button = QPushButton('Start Mission')
 
         self.heartbeat_checks = {}
         for ecu_name in ECU_NAMES:
@@ -282,13 +344,16 @@ class MainWindow(QMainWindow):
         self.gui_signals.vehicle_state_received.connect(self.update_vehicle_state)
         self.gui_signals.battery_status_received.connect(self.update_battery_status)
         self.gui_signals.obstacle_info_received.connect(self.update_obstacle_info)
+        self.gui_signals.motor_status_received.connect(self.update_motor_status)
         self.gui_signals.heartbeat_received.connect(self.update_heartbeat_status)
         self.gui_signals.diagnostic_event_received.connect(
             self.add_diagnostic_event
         )
+        self.gui_signals.service_result_received.connect(self.update_service_result)
 
         self.soc_slider.valueChanged.connect(self.update_soc_label)
         self.publish_battery_button.clicked.connect(self.publish_battery)
+        self.start_mission_button.clicked.connect(self.request_start_mission)
 
     def build_layout(self):
         root = QWidget()
@@ -300,11 +365,13 @@ class MainWindow(QMainWindow):
         monitor_layout.addWidget(self.build_vehicle_state_group())
         monitor_layout.addWidget(self.build_battery_monitor_group())
         monitor_layout.addWidget(self.build_obstacle_monitor_group())
+        monitor_layout.addWidget(self.build_motor_monitor_group())
         monitor_layout.addWidget(self.build_heartbeat_monitor_group())
         monitor_layout.addWidget(self.build_diagnostic_event_group())
 
         simulator_panel = QWidget()
         simulator_layout = QVBoxLayout(simulator_panel)
+        simulator_layout.addWidget(self.build_vehicle_command_group())
         simulator_layout.addWidget(self.build_battery_simulator_group())
         simulator_layout.addWidget(self.build_heartbeat_simulator_group())
         simulator_layout.addStretch()
@@ -340,6 +407,23 @@ class MainWindow(QMainWindow):
         layout.addRow('Detected', self.obstacle_detected_label)
         layout.addRow('Distance', self.obstacle_distance_label)
         layout.addRow('Angle', self.obstacle_angle_label)
+        return group
+
+    def build_motor_monitor_group(self):
+        group = QGroupBox('Motor Status')
+        layout = QFormLayout(group)
+        layout.addRow('Enabled', self.motor_enabled_label)
+        layout.addRow('Target Linear', self.motor_target_linear_label)
+        layout.addRow('Current Linear', self.motor_current_linear_label)
+        layout.addRow('Target Angular', self.motor_target_angular_label)
+        layout.addRow('Current Angular', self.motor_current_angular_label)
+        return group
+
+    def build_vehicle_command_group(self):
+        group = QGroupBox('Vehicle Commands')
+        layout = QVBoxLayout(group)
+        layout.addWidget(self.start_mission_button)
+        layout.addWidget(self.service_result_label)
         return group
 
     def build_heartbeat_monitor_group(self):
@@ -395,6 +479,20 @@ class MainWindow(QMainWindow):
         self.obstacle_detected_label.setText('YES' if detected else 'NO')
         self.obstacle_distance_label.setText(f'{distance:.2f} m')
         self.obstacle_angle_label.setText(f'{angle:.1f} deg')
+
+    def update_motor_status(
+        self,
+        target_linear,
+        current_linear,
+        target_angular,
+        current_angular,
+        enabled
+    ):
+        self.motor_enabled_label.setText('YES' if enabled else 'NO')
+        self.motor_target_linear_label.setText(f'{target_linear:.2f} m/s')
+        self.motor_current_linear_label.setText(f'{current_linear:.2f} m/s')
+        self.motor_target_angular_label.setText(f'{target_angular:.2f} rad/s')
+        self.motor_current_angular_label.setText(f'{current_angular:.2f} rad/s')
 
     def update_heartbeat_status(self, ecu_name, timestamp_text, received_monotonic):
         if ecu_name not in self.heartbeat_rows:
@@ -468,6 +566,16 @@ class MainWindow(QMainWindow):
             self.soc_slider.value(),
             self.voltage_spin.value(),
             self.current_spin.value()
+        )
+
+    def request_start_mission(self):
+        self.service_result_label.setText('Start Mission: requesting...')
+        self.ros_node.request_start_mission()
+
+    def update_service_result(self, command_name, success, message):
+        status = 'OK' if success else 'FAIL'
+        self.service_result_label.setText(
+            f'{command_name}: {status} - {message}'
         )
 
     def publish_enabled_heartbeats(self):
