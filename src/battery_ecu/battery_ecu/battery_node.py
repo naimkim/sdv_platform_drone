@@ -2,7 +2,10 @@ import rclpy
 from rclpy.node import Node
 
 from sdv_interfaces.msg import BatteryStatus
+from sdv_interfaces.msg import Heartbeat
 from sdv_interfaces.msg import VehicleState
+
+from datetime import datetime
 
 DEBUG = True
 
@@ -12,8 +15,21 @@ class BatteryNode(Node):
         super().__init__('battery_ecu')
 
         # =============================
+        # Members
+        self.soc = 100.0
+        self.voltage = 400.0
+        self.current = 10.0
+        # =============================
+
+        # =============================
         # Create Pub / Sub
-        self.publisher_ = self.create_publisher(
+        self.heart_beat_publisher_ = self.create_publisher(
+            Heartbeat,
+            '/ecu/heartbeat',
+            10
+        )
+
+        self.battery_status_publisher_ = self.create_publisher(
             BatteryStatus,
             '/ecu/battery/status',
             10
@@ -28,15 +44,8 @@ class BatteryNode(Node):
         # =============================
 
         # =============================
-        # Members
-        self.soc = 100.0
-        self.voltage = 400.0
-        self.current = 10.0
-        # =============================
-
-        # =============================
         # Create Task (Periodically)
-        self.timer = self.create_timer(
+        self.timer_1000ms = self.create_timer(
             1.0,
             self.Task_1000ms
         )
@@ -45,19 +54,37 @@ class BatteryNode(Node):
         if DEBUG :
             self.get_logger().info('Battery ECU Started')
 
+# ===================
+# CallBacks            
+    def vehicle_status_callback(self, msg):
+        if DEBUG:
+            self.get_logger().info(
+                f'Current Vehicle State = {msg.state}'
+            )
+# ===================
+
+# ===================
+# Task Implementation
     def Task_1000ms(self):
+        hb_msg = Heartbeat()
+        bs_msg = BatteryStatus()
 
-        msg = BatteryStatus()
+        hb_msg.ecu_name = "battery_ecu"
+        hb_msg.timestamp = self.get_clock().now().nanoseconds
 
-        msg.soc = self.soc
-        msg.voltage = self.voltage
-        msg.current = self.current
+        bs_msg.soc = self.soc
+        bs_msg.voltage = self.voltage
+        bs_msg.current = self.current
 
-        self.publisher_.publish(msg)
+        self.heart_beat_publisher_.publish(hb_msg)
+        self.battery_status_publisher_.publish(bs_msg)
 
         if DEBUG :
             self.get_logger().info(
-                f'SOC={msg.soc:.1f}%\nVOLTAGE={msg.voltage:.1f}V\nCURRENT={msg.current:.1f}A'
+                f'SOC={bs_msg.soc:.1f}%\nVOLTAGE={bs_msg.voltage:.1f}V\nCURRENT={bs_msg.current:.1f}A'
+            )
+            self.get_logger().info(
+                f'Node={hb_msg.ecu_name} , timestamp={hb_msg.timestamp}'
             )
 
         self.soc -= 1.0
@@ -70,12 +97,12 @@ class BatteryNode(Node):
             self.voltage = 400.0
         if self.current < 0.0:
             self.current = 10.0
-    
-    def vehicle_status_callback(self, msg):
-        if DEBUG:
-            self.get_logger().info(
-                f'Current Vehicle State = {msg.state}'
-            )
+# ===================
+
+# ===================    
+# Functions
+
+# ===================    
 
 def main(args=None):
     rclpy.init(args=args)

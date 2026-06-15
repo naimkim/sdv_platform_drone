@@ -2,6 +2,7 @@ import rclpy
 from rclpy.node import Node
 
 from sdv_interfaces.msg import BatteryStatus
+from sdv_interfaces.msg import Heartbeat
 from sdv_interfaces.msg import VehicleState
 from enum import IntEnum
 
@@ -19,6 +20,38 @@ class VehicleManagerNode(Node):
 
     def __init__(self):
         super().__init__('vehicle_manager')
+        # =============================
+        # Members
+        self.state = VehicleState_e.INIT
+        self.received_initial_battery_status = False
+
+        self.ecu_health = {
+            "battery_ecu": {
+            "required": True,
+            "timeout_sec": 3.0,
+            "last_seen_ns": None,
+            "alive": False,
+            },
+            "sensor_ecu": {
+            "required": True,
+            "timeout_sec": 3.0,
+            "last_seen_ns": None,
+            "alive": False,
+            },
+            "motor_ecu": {
+            "required": True,
+            "timeout_sec": 3.0,
+            "last_seen_ns": None,
+            "alive": False,
+            },
+            "security_ecu": {
+            "required": False,
+            "timeout_sec": 5.0,
+            "last_seen_ns": None,
+            "alive": False,
+            },
+        }
+        # =============================
 
         # =============================
         # Create Pub / Sub
@@ -28,22 +61,24 @@ class VehicleManagerNode(Node):
             10
         )
 
-        self.subscription = self.create_subscription(
+        self.battery_subscription = self.create_subscription(
             BatteryStatus,
             '/ecu/battery/status',
             self.battery_callback,
             10
         )
+
+        self.heartbeat_subscription = self.create_subscription(
+            Heartbeat,
+            '/ecu/heartbeat',
+            self.heart_beat_callback,
+            10
+        )
         # =============================
         
         # =============================
-        # Members
-        self.state = VehicleState_e.INIT
-        # =============================
-       
-        # =============================
         # Create Task (Periodically)
-        self.create_timer(
+        self.timer_1000ms = self.create_timer(
             1.0,
             self.Task_1000ms
         )
@@ -53,8 +88,11 @@ class VehicleManagerNode(Node):
             self.get_logger().info(
                 'Vehicle Manager Started'
             )
-    
+# ===================
+# CALLBACKs
     def battery_callback(self,msg):
+        self.received_initial_battery_status = True
+
         if msg.soc <= 20.0:
             if self.state == VehicleState_e.MISSION:
                 self.change_state(
@@ -64,9 +102,22 @@ class VehicleManagerNode(Node):
             self.get_logger().info(
                 f'Received SOC={msg.soc:.1f}%\nReceived VOLTAGE={msg.voltage:.1f}V\nRecevice CURRENT={msg.current:.1f}A'
             )
+    def heart_beat_callback(self,msg):
+        ecu_name = msg.ecu_name 
+
+        if ecu_name not in self.ecu_health:
+            self.get_logger().warn(f"Unknown ECU heartbeat: {ecu_name}")
+            return
+
+        self.ecu_health[ecu_name]["last_seen_ns"] = self.get_clock().now().nanoseconds
+        self.ecu_health[ecu_name]["alive"] = True
+
+        if DEBUG :
+            self.get_logger().info(
+                f'HeartBeat Received={msg.ecu_name}, TimeStamp={msg.timestamp}'
+            )
 # ===================
 # STUB
-# ===================
     def fault_callback(self,msg):
         self.change_state(
             VehicleState_e.FAULT
@@ -76,17 +127,22 @@ class VehicleManagerNode(Node):
         self.change_state(
             VehicleState_e.EMERGENCY
         )    
-# ===================
-# END
-# ===================
+# =================== End of Stub
+# =================== End of CALLBACKs
 
 # ===================
 # Task Implementation
     def Task_1000ms(self):
+        if not self.check_heartbeat_timeout():
+            return
+
         if self.state == VehicleState_e.INIT:
-            self.change_state(VehicleState_e.READY)
+            if self.is_system_ready():
+                self.change_state(VehicleState_e.READY)
 # ===================
-    
+
+# ===================    
+# Functions
     def publish_vehicle_state(self):
         msg = VehicleState()
         msg.state = int(self.state)
@@ -101,6 +157,43 @@ class VehicleManagerNode(Node):
             )
         self.state = new_state
         self.publish_vehicle_state()
+    
+    def is_system_ready(self):
+        return self.are_required_ecus_alive() and self.received_initial_battery_status
+    
+    def are_required_ecus_alive(self):
+        for health in self.ecu_health.values():
+            if health["required"] and not health["alive"]:
+                return False
+        return True
+    
+    def check_heartbeat_timeout(self):
+        now_ns = self.get_clock().now().nanoseconds
+
+        for ecu_name, health in self.ecu_health.items():
+            last_seen_ns = health["last_seen_ns"]
+            if last_seen_ns is None:
+                if health["required"]:
+                    return False
+                continue
+            elapsed_sec = (now_ns - last_seen_ns) / 1_000_000_000.0
+
+            if elapsed_sec > health["timeout_sec"]:
+                health["alive"] = False
+
+                if health["required"]:
+                    if DEBUG:
+                        self.get_logger().error(
+                            f'Required ECU timeout : {ecu_name}, elapsed={elapsed_sec:.1f}s'
+                        )
+                    self.change_state(VehicleState_e.FAULT)
+                    return False
+                if DEBUG:
+                    self.get_logger().warn(
+                        f"Optional ECU timeout: {ecu_name}, elapsed={elapsed_sec:.1f}s"
+                    )
+        return True
+# ===================
 
 def main(args=None):
     rclpy.init(args=args)

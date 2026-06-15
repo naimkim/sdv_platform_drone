@@ -270,7 +270,7 @@ EMERGENCY
 
 ---
 
-### /heartbeat
+### ecu/heartbeat
 
 #### Publisher
 
