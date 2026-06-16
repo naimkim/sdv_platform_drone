@@ -1,11 +1,9 @@
+from motor_ecu.motor_driver import SimMotorDriver
 import rclpy
 from rclpy.node import Node
-
 from sdv_interfaces.msg import Heartbeat
 from sdv_interfaces.msg import MotorStatus
 from sdv_interfaces.msg import VehicleState
-
-from motor_ecu.motor_driver import SimMotorDriver
 
 # Node Config VARs
 DEBUG = True
@@ -15,6 +13,7 @@ TASK_USE_1MS = False
 TASK_USE_10MS = False
 TASK_USE_100MS = True
 TASK_USE_1000MS = True
+
 
 class MotorNode(Node):
 
@@ -114,10 +113,7 @@ class MotorNode(Node):
                 self.mission_target_angular
             )
         elif self.last_vehicle_state == VehicleState.LOW_BATTERY:
-            self.motor_driver.set_velocity(
-                self.mission_target_linear * 0.5,
-                self.mission_target_angular
-            )
+            self.motor_driver.stop()
         elif self.last_vehicle_state == VehicleState.EMERGENCY:
             self.motor_driver.emergency_stop()
         elif self.last_vehicle_state == VehicleState.FAULT:

@@ -1,21 +1,11 @@
+from datetime import datetime
+import math
 import sys
 import threading
 import time
-from datetime import datetime
 
-import rclpy
-from rclpy.executors import ExternalShutdownException
-from rclpy.node import Node
-
-from sdv_interfaces.msg import BatteryStatus
-from sdv_interfaces.msg import DiagnosticEvent
-from sdv_interfaces.msg import Heartbeat
-from sdv_interfaces.msg import MotorStatus
-from sdv_interfaces.msg import ObstacleInfo
-from sdv_interfaces.msg import VehicleState
-from sdv_interfaces.srv import StartMission
-
-from PyQt5.QtCore import QObject, Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import pyqtSignal, QObject, QPointF, QRectF, Qt, QTimer
+from PyQt5.QtGui import QColor, QFont, QPainter, QPen, QPolygonF
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -28,15 +18,30 @@ from PyQt5.QtWidgets import (
     QListWidget,
     QMainWindow,
     QPushButton,
+    QScrollArea,
     QSlider,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
+import rclpy
+from rclpy.executors import ExternalShutdownException
+from rclpy.node import Node
+
+from sdv_interfaces.msg import BatteryStatus
+from sdv_interfaces.msg import DiagnosticEvent
+from sdv_interfaces.msg import Heartbeat
+from sdv_interfaces.msg import MotorStatus
+from sdv_interfaces.msg import ObstacleInfo
+from sdv_interfaces.msg import VehicleState
+from sdv_interfaces.srv import StartMission
 
 MAIN_WINDOW_WIDTH = 1100
 MAIN_WINDOW_HEIGHT = 760
+SIMULATION_UPDATE_INTERVAL_MS = 50
+WORLD_BOUNDARY_M = 4.0
+GUI_FONT_FAMILY = 'DejaVu Sans'
 
 ECU_NAMES = (
     'battery_ecu',
@@ -59,6 +64,15 @@ DIAGNOSTIC_SEVERITY_NAMES = {
     1: 'WARN',
     2: 'ERROR',
     3: 'CRITICAL',
+}
+
+STATE_COLORS = {
+    VehicleState.INIT: QColor(120, 120, 120),
+    VehicleState.READY: QColor(36, 128, 74),
+    VehicleState.MISSION: QColor(32, 94, 166),
+    VehicleState.LOW_BATTERY: QColor(186, 126, 18),
+    VehicleState.FAULT: QColor(184, 54, 54),
+    VehicleState.EMERGENCY: QColor(150, 28, 28),
 }
 
 
@@ -231,6 +245,418 @@ class SdvTestGuiRosNode(Node):
             )
 
 
+class SimulationView(QWidget):
+
+    def __init__(self):
+        super().__init__()
+
+        self.setMinimumHeight(280)
+
+        self.x_m = 0.0
+        self.y_m = 0.0
+        self.yaw_rad = -math.pi / 2.0
+        self.path_points = []
+
+        self.current_linear = 0.0
+        self.current_angular = 0.0
+        self.target_linear = 0.0
+        self.target_angular = 0.0
+        self.motor_enabled = False
+
+        self.obstacle_detected = False
+        self.obstacle_distance = 3.0
+        self.obstacle_angle_deg = 0.0
+
+        self.vehicle_state = VehicleState.INIT
+        self.last_update_monotonic = time.monotonic()
+
+        self.update_timer = QTimer(self)
+        self.update_timer.setInterval(SIMULATION_UPDATE_INTERVAL_MS)
+        self.update_timer.timeout.connect(self.step_simulation)
+        self.update_timer.start()
+
+    def set_vehicle_state(self, state):
+        self.vehicle_state = state
+        self.update()
+
+    def set_obstacle(self, detected, distance, angle):
+        self.obstacle_detected = detected
+        self.obstacle_distance = distance
+        self.obstacle_angle_deg = angle
+        self.update()
+
+    def set_motor_status(
+        self,
+        target_linear,
+        current_linear,
+        target_angular,
+        current_angular,
+        enabled
+    ):
+        self.target_linear = target_linear
+        self.current_linear = current_linear
+        self.target_angular = target_angular
+        self.current_angular = current_angular
+        self.motor_enabled = enabled
+
+    def reset_pose(self):
+        self.x_m = 0.0
+        self.y_m = 0.0
+        self.yaw_rad = -math.pi / 2.0
+        self.path_points.clear()
+        self.update()
+
+    def step_simulation(self):
+        now = time.monotonic()
+        dt_sec = min(0.2, now - self.last_update_monotonic)
+        self.last_update_monotonic = now
+
+        if self.motor_enabled:
+            self.yaw_rad += self.current_angular * dt_sec
+            self.x_m += self.current_linear * math.cos(self.yaw_rad) * dt_sec
+            self.y_m += self.current_linear * math.sin(self.yaw_rad) * dt_sec
+
+            if not self.path_points or distance_2d(
+                self.path_points[-1][0],
+                self.path_points[-1][1],
+                self.x_m,
+                self.y_m
+            ) > 0.05:
+                self.path_points.append((self.x_m, self.y_m))
+                self.path_points = self.path_points[-120:]
+
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        rect = self.rect()
+        painter.fillRect(rect, QColor(246, 248, 250))
+
+        margin = 18
+        world_rect = rect.adjusted(margin, margin, -margin, -margin)
+        scale = min(world_rect.width(), world_rect.height()) / (
+            WORLD_BOUNDARY_M * 2.0
+        )
+        vehicle_screen_center = world_rect.center()
+
+        def to_screen(x_m, y_m):
+            return QPointF(
+                vehicle_screen_center.x() + (x_m - self.x_m) * scale,
+                vehicle_screen_center.y() + (y_m - self.y_m) * scale
+            )
+
+        self.draw_grid(painter, world_rect, vehicle_screen_center, scale)
+        self.draw_path(painter, to_screen)
+        self.draw_sensor(painter, to_screen, scale)
+        self.draw_obstacle(painter, to_screen)
+        self.draw_vehicle(painter, to_screen)
+        self.draw_overlay(painter, rect)
+
+    def draw_grid(self, painter, world_rect, vehicle_screen_center, scale):
+        painter.setPen(QPen(QColor(220, 226, 232), 1))
+
+        start_x_m = math.floor(self.x_m - WORLD_BOUNDARY_M)
+        end_x_m = math.ceil(self.x_m + WORLD_BOUNDARY_M)
+        start_y_m = math.floor(self.y_m - WORLD_BOUNDARY_M)
+        end_y_m = math.ceil(self.y_m + WORLD_BOUNDARY_M)
+
+        for x_m in range(start_x_m, end_x_m + 1):
+            screen_x = vehicle_screen_center.x() + (x_m - self.x_m) * scale
+            painter.drawLine(
+                QPointF(screen_x, world_rect.top()),
+                QPointF(screen_x, world_rect.bottom())
+            )
+
+        for y_m in range(start_y_m, end_y_m + 1):
+            screen_y = vehicle_screen_center.y() + (y_m - self.y_m) * scale
+            painter.drawLine(
+                QPointF(world_rect.left(), screen_y),
+                QPointF(world_rect.right(), screen_y)
+            )
+
+        painter.setPen(QPen(QColor(135, 144, 153), 2))
+        painter.drawLine(
+            QPointF(vehicle_screen_center.x(), world_rect.top()),
+            QPointF(vehicle_screen_center.x(), world_rect.bottom())
+        )
+        painter.drawLine(
+            QPointF(world_rect.left(), vehicle_screen_center.y()),
+            QPointF(world_rect.right(), vehicle_screen_center.y())
+        )
+
+    def draw_path(self, painter, to_screen):
+        if len(self.path_points) < 2:
+            return
+
+        painter.setPen(QPen(QColor(84, 138, 198), 2))
+        for index in range(1, len(self.path_points)):
+            prev = self.path_points[index - 1]
+            current = self.path_points[index]
+            painter.drawLine(to_screen(prev[0], prev[1]), to_screen(current[0], current[1]))
+
+    def draw_sensor(self, painter, to_screen, scale):
+        origin = to_screen(self.x_m, self.y_m)
+        radius = 2.2 * scale
+        start_deg = -math.degrees(self.yaw_rad) - 30.0
+
+        painter.setPen(QPen(QColor(45, 126, 171), 1))
+        painter.setBrush(QColor(45, 126, 171, 36))
+        painter.drawPie(
+            QRectF(origin.x() - radius, origin.y() - radius, radius * 2, radius * 2),
+            int(start_deg * 16),
+            int(60.0 * 16)
+        )
+
+    def draw_obstacle(self, painter, to_screen):
+        if not self.obstacle_detected:
+            return
+
+        obstacle_yaw = self.yaw_rad + math.radians(self.obstacle_angle_deg)
+        obstacle_x = self.x_m + self.obstacle_distance * math.cos(obstacle_yaw)
+        obstacle_y = self.y_m + self.obstacle_distance * math.sin(obstacle_yaw)
+        obstacle_point = to_screen(obstacle_x, obstacle_y)
+
+        painter.setPen(QPen(QColor(148, 38, 38), 2))
+        painter.setBrush(QColor(216, 65, 65))
+        painter.drawEllipse(obstacle_point, 8, 8)
+        painter.drawLine(to_screen(self.x_m, self.y_m), obstacle_point)
+
+    def draw_vehicle(self, painter, to_screen):
+        center = to_screen(self.x_m, self.y_m)
+        length = 34.0
+        width = 22.0
+
+        front = QPointF(math.cos(self.yaw_rad), math.sin(self.yaw_rad))
+        right = QPointF(-math.sin(self.yaw_rad), math.cos(self.yaw_rad))
+
+        polygon = QPolygonF([
+            center + front * (length * 0.55),
+            center - front * (length * 0.45) + right * (width * 0.5),
+            center - front * (length * 0.3),
+            center - front * (length * 0.45) - right * (width * 0.5),
+        ])
+
+        state_color = STATE_COLORS.get(self.vehicle_state, QColor(120, 120, 120))
+        painter.setPen(QPen(QColor(30, 34, 38), 2))
+        painter.setBrush(state_color)
+        painter.drawPolygon(polygon)
+
+        painter.setPen(QPen(QColor(30, 34, 38), 2))
+        painter.drawLine(center, center + front * 30.0)
+
+    def draw_overlay(self, painter, rect):
+        painter.setPen(QColor(35, 40, 45))
+        painter.setFont(QFont(GUI_FONT_FAMILY, 9))
+
+        state_name = VEHICLE_STATE_NAMES.get(self.vehicle_state, 'UNKNOWN')
+        text = (
+            f'2D Simulation | state={state_name} | '
+            f'v={self.current_linear:.2f} m/s | w={self.current_angular:.2f} rad/s'
+        )
+        painter.drawText(rect.adjusted(12, 8, -12, -8), Qt.AlignLeft | Qt.AlignTop, text)
+
+
+class DashboardWidget(QWidget):
+
+    def __init__(self):
+        super().__init__()
+
+        self.setMinimumHeight(150)
+
+        self.vehicle_state = VehicleState.INIT
+        self.soc = 0.0
+        self.voltage = 0.0
+        self.current = 0.0
+        self.current_linear = 0.0
+        self.current_angular = 0.0
+        self.motor_enabled = False
+        self.obstacle_detected = False
+        self.obstacle_distance = 0.0
+
+    def set_vehicle_state(self, state):
+        self.vehicle_state = state
+        self.update()
+
+    def set_battery_status(self, soc, voltage, current):
+        self.soc = soc
+        self.voltage = voltage
+        self.current = current
+        self.update()
+
+    def set_obstacle(self, detected, distance):
+        self.obstacle_detected = detected
+        self.obstacle_distance = distance
+        self.update()
+
+    def set_motor_status(self, current_linear, current_angular, enabled):
+        self.current_linear = current_linear
+        self.current_angular = current_angular
+        self.motor_enabled = enabled
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.fillRect(self.rect(), QColor(250, 251, 252))
+
+        content = self.rect().adjusted(14, 12, -14, -12)
+        column_width = content.width() / 3.0
+        self.draw_state_lamps(
+            painter,
+            QRectF(content.left(), content.top(), column_width, content.height())
+        )
+        self.draw_motion_gauges(
+            painter,
+            QRectF(content.left() + column_width, content.top(), column_width, content.height())
+        )
+        self.draw_battery_obstacle(
+            painter,
+            QRectF(
+                content.left() + column_width * 2.0,
+                content.top(),
+                column_width,
+                content.height()
+            )
+        )
+
+    def draw_state_lamps(self, painter, rect):
+        state_name = VEHICLE_STATE_NAMES.get(self.vehicle_state, 'UNKNOWN')
+        state_color = STATE_COLORS.get(self.vehicle_state, QColor(120, 120, 120))
+
+        self.draw_label(painter, rect, 'Vehicle')
+        painter.setPen(QPen(QColor(48, 54, 61), 1))
+        painter.setBrush(state_color)
+        painter.drawEllipse(QPointF(rect.left() + 20, rect.top() + 48), 13, 13)
+        painter.setPen(QColor(30, 34, 38))
+        painter.setFont(QFont(GUI_FONT_FAMILY, 13, QFont.Bold))
+        painter.drawText(
+            QRectF(rect.left() + 44, rect.top() + 32, rect.width() - 48, 36),
+            Qt.AlignVCenter | Qt.AlignLeft,
+            state_name
+        )
+
+        motor_color = QColor(36, 128, 74) if self.motor_enabled else QColor(145, 150, 156)
+        painter.setBrush(motor_color)
+        painter.drawEllipse(QPointF(rect.left() + 20, rect.top() + 88), 9, 9)
+        painter.setFont(QFont(GUI_FONT_FAMILY, 10))
+        painter.drawText(
+            QRectF(rect.left() + 40, rect.top() + 76, rect.width() - 44, 28),
+            Qt.AlignVCenter | Qt.AlignLeft,
+            'Motor Enabled' if self.motor_enabled else 'Motor Disabled'
+        )
+
+    def draw_motion_gauges(self, painter, rect):
+        self.draw_label(painter, rect, 'Motion')
+        self.draw_bar(
+            painter,
+            rect.left() + 12,
+            rect.top() + 42,
+            rect.width() - 24,
+            'Linear',
+            self.current_linear,
+            -1.5,
+            1.5,
+            'm/s'
+        )
+        self.draw_bar(
+            painter,
+            rect.left() + 12,
+            rect.top() + 90,
+            rect.width() - 24,
+            'Angular',
+            self.current_angular,
+            -2.0,
+            2.0,
+            'rad/s'
+        )
+
+    def draw_battery_obstacle(self, painter, rect):
+        self.draw_label(painter, rect, 'Power / Sensor')
+        self.draw_bar(
+            painter,
+            rect.left() + 12,
+            rect.top() + 42,
+            rect.width() - 24,
+            'SOC',
+            self.soc,
+            0.0,
+            100.0,
+            '%'
+        )
+
+        painter.setPen(QColor(30, 34, 38))
+        painter.setFont(QFont(GUI_FONT_FAMILY, 10))
+        battery_text = f'{self.voltage:.1f} V  {self.current:.1f} A'
+        painter.drawText(
+            QRectF(rect.left() + 12, rect.top() + 74, rect.width() - 24, 24),
+            Qt.AlignLeft | Qt.AlignVCenter,
+            battery_text
+        )
+
+        obstacle_color = QColor(216, 65, 65) if self.obstacle_detected else QColor(36, 128, 74)
+        painter.setBrush(obstacle_color)
+        painter.setPen(QPen(QColor(48, 54, 61), 1))
+        painter.drawEllipse(QPointF(rect.left() + 22, rect.top() + 114), 9, 9)
+        painter.setPen(QColor(30, 34, 38))
+        sensor_text = (
+            f'Obstacle {self.obstacle_distance:.2f} m'
+            if self.obstacle_detected
+            else 'Path Clear'
+        )
+        painter.drawText(
+            QRectF(rect.left() + 42, rect.top() + 101, rect.width() - 48, 28),
+            Qt.AlignLeft | Qt.AlignVCenter,
+            sensor_text
+        )
+
+    def draw_bar(self, painter, left, top, width, label, value, minimum, maximum, unit):
+        label_rect = QRectF(left, top - 20, width, 18)
+        painter.setPen(QColor(30, 34, 38))
+        painter.setFont(QFont(GUI_FONT_FAMILY, 9))
+        painter.drawText(
+            label_rect,
+            Qt.AlignLeft | Qt.AlignVCenter,
+            f'{label}: {value:.2f} {unit}'
+        )
+
+        bar_rect = QRectF(left, top, width, 14)
+        painter.setPen(QPen(QColor(185, 194, 203), 1))
+        painter.setBrush(QColor(229, 234, 239))
+        painter.drawRoundedRect(bar_rect, 3, 3)
+
+        normalized = 0.0
+        if maximum > minimum:
+            normalized = (clamp(value, minimum, maximum) - minimum) / (maximum - minimum)
+
+        fill_width = bar_rect.width() * normalized
+        fill_color = QColor(44, 119, 190)
+        if label == 'SOC' and value < 25.0:
+            fill_color = QColor(198, 73, 57)
+
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(fill_color)
+        painter.drawRoundedRect(
+            QRectF(bar_rect.left(), bar_rect.top(), fill_width, bar_rect.height()),
+            3,
+            3
+        )
+
+        if minimum < 0.0 < maximum:
+            zero_x = bar_rect.left() + bar_rect.width() * ((0.0 - minimum) / (maximum - minimum))
+            painter.setPen(QPen(QColor(72, 80, 88), 1))
+            painter.drawLine(
+                QPointF(zero_x, bar_rect.top() - 2),
+                QPointF(zero_x, bar_rect.bottom() + 2)
+            )
+
+    def draw_label(self, painter, rect, text):
+        painter.setPen(QColor(85, 92, 100))
+        painter.setFont(QFont(GUI_FONT_FAMILY, 9, QFont.Bold))
+        painter.drawText(rect.adjusted(8, 0, -8, 0), Qt.AlignLeft | Qt.AlignTop, text)
+
+
 class MainWindow(QMainWindow):
 
     def __init__(self, ros_node, gui_signals):
@@ -260,6 +686,9 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.build_layout())
 
     def create_monitor_widgets(self):
+        self.simulation_view = SimulationView()
+        self.dashboard_widget = DashboardWidget()
+
         self.node_list = QListWidget()
 
         self.state_label = QLabel('NO DATA')
@@ -361,6 +790,8 @@ class MainWindow(QMainWindow):
 
         monitor_panel = QWidget()
         monitor_layout = QVBoxLayout(monitor_panel)
+        monitor_layout.addWidget(self.build_virtual_render_group())
+        monitor_layout.addWidget(self.build_dashboard_group())
         monitor_layout.addWidget(self.build_node_monitor_group())
         monitor_layout.addWidget(self.build_vehicle_state_group())
         monitor_layout.addWidget(self.build_battery_monitor_group())
@@ -376,10 +807,29 @@ class MainWindow(QMainWindow):
         simulator_layout.addWidget(self.build_heartbeat_simulator_group())
         simulator_layout.addStretch()
 
-        root_layout.addWidget(monitor_panel, 2)
-        root_layout.addWidget(simulator_panel, 1)
+        root_layout.addWidget(self.build_scroll_area(monitor_panel), 2)
+        root_layout.addWidget(self.build_scroll_area(simulator_panel), 1)
 
         return root
+
+    def build_scroll_area(self, content_widget):
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QScrollArea.NoFrame)
+        scroll_area.setWidget(content_widget)
+        return scroll_area
+
+    def build_virtual_render_group(self):
+        group = QGroupBox('Virtual Render')
+        layout = QVBoxLayout(group)
+        layout.addWidget(self.simulation_view)
+        return group
+
+    def build_dashboard_group(self):
+        group = QGroupBox('Dashboard')
+        layout = QVBoxLayout(group)
+        layout.addWidget(self.dashboard_widget)
+        return group
 
     def build_node_monitor_group(self):
         group = QGroupBox('Node Monitor')
@@ -469,16 +919,21 @@ class MainWindow(QMainWindow):
     def update_vehicle_state(self, state):
         state_name = VEHICLE_STATE_NAMES.get(state, f'UNKNOWN({state})')
         self.state_label.setText(state_name)
+        self.simulation_view.set_vehicle_state(state)
+        self.dashboard_widget.set_vehicle_state(state)
 
     def update_battery_status(self, soc, voltage, current):
         self.battery_soc_label.setText(f'{soc:.1f} %')
         self.battery_voltage_label.setText(f'{voltage:.1f} V')
         self.battery_current_label.setText(f'{current:.1f} A')
+        self.dashboard_widget.set_battery_status(soc, voltage, current)
 
     def update_obstacle_info(self, detected, distance, angle):
         self.obstacle_detected_label.setText('YES' if detected else 'NO')
         self.obstacle_distance_label.setText(f'{distance:.2f} m')
         self.obstacle_angle_label.setText(f'{angle:.1f} deg')
+        self.simulation_view.set_obstacle(detected, distance, angle)
+        self.dashboard_widget.set_obstacle(detected, distance)
 
     def update_motor_status(
         self,
@@ -493,6 +948,18 @@ class MainWindow(QMainWindow):
         self.motor_current_linear_label.setText(f'{current_linear:.2f} m/s')
         self.motor_target_angular_label.setText(f'{target_angular:.2f} rad/s')
         self.motor_current_angular_label.setText(f'{current_angular:.2f} rad/s')
+        self.simulation_view.set_motor_status(
+            target_linear,
+            current_linear,
+            target_angular,
+            current_angular,
+            enabled
+        )
+        self.dashboard_widget.set_motor_status(
+            current_linear,
+            current_angular,
+            enabled
+        )
 
     def update_heartbeat_status(self, ecu_name, timestamp_text, received_monotonic):
         if ecu_name not in self.heartbeat_rows:
@@ -611,10 +1078,19 @@ def format_wall_time():
     return datetime.now().strftime('%H:%M:%S.%f')[:-3]
 
 
+def clamp(value, minimum, maximum):
+    return max(minimum, min(maximum, value))
+
+
+def distance_2d(x1, y1, x2, y2):
+    return math.hypot(x2 - x1, y2 - y1)
+
+
 def main(args=None):
     rclpy.init(args=args)
 
     app = QApplication(sys.argv[:1])
+    app.setFont(QFont(GUI_FONT_FAMILY, 10))
 
     gui_signals = GuiSignals()
     ros_node = SdvTestGuiRosNode(gui_signals)
