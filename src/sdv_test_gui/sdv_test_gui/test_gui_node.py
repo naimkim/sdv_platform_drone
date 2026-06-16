@@ -5,7 +5,7 @@ import threading
 import time
 
 from PyQt5.QtCore import pyqtSignal, QObject, QPointF, QRectF, Qt, QTimer
-from PyQt5.QtGui import QColor, QFont, QPainter, QPen, QPolygonF
+from PyQt5.QtGui import QColor, QFont, QPainter, QPen
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -350,8 +350,8 @@ class SimulationView(QWidget):
         self.draw_grid(painter, world_rect, vehicle_screen_center, scale)
         self.draw_path(painter, to_screen)
         self.draw_sensor(painter, to_screen, scale)
-        self.draw_obstacle(painter, to_screen)
         self.draw_vehicle(painter, to_screen)
+        self.draw_obstacle(painter, to_screen)
         self.draw_overlay(painter, rect)
 
     def draw_grid(self, painter, world_rect, vehicle_screen_center, scale):
@@ -418,33 +418,43 @@ class SimulationView(QWidget):
         obstacle_y = self.y_m + self.obstacle_distance * math.sin(obstacle_yaw)
         obstacle_point = to_screen(obstacle_x, obstacle_y)
 
-        painter.setPen(QPen(QColor(148, 38, 38), 2))
+        painter.setPen(QPen(QColor(120, 24, 24), 3))
         painter.setBrush(QColor(216, 65, 65))
-        painter.drawEllipse(obstacle_point, 8, 8)
+        painter.drawEllipse(obstacle_point, 10, 10)
+        painter.setBrush(QColor(255, 240, 120))
+        painter.drawEllipse(obstacle_point, 4, 4)
         painter.drawLine(to_screen(self.x_m, self.y_m), obstacle_point)
 
     def draw_vehicle(self, painter, to_screen):
         center = to_screen(self.x_m, self.y_m)
-        length = 34.0
-        width = 22.0
-
-        front = QPointF(math.cos(self.yaw_rad), math.sin(self.yaw_rad))
-        right = QPointF(-math.sin(self.yaw_rad), math.cos(self.yaw_rad))
-
-        polygon = QPolygonF([
-            center + front * (length * 0.55),
-            center - front * (length * 0.45) + right * (width * 0.5),
-            center - front * (length * 0.3),
-            center - front * (length * 0.45) - right * (width * 0.5),
-        ])
 
         state_color = STATE_COLORS.get(self.vehicle_state, QColor(120, 120, 120))
-        painter.setPen(QPen(QColor(30, 34, 38), 2))
-        painter.setBrush(state_color)
-        painter.drawPolygon(polygon)
+
+        painter.save()
+        painter.translate(center)
+        painter.rotate(math.degrees(self.yaw_rad) + 90.0)
 
         painter.setPen(QPen(QColor(30, 34, 38), 2))
-        painter.drawLine(center, center + front * 30.0)
+        painter.setBrush(state_color)
+        painter.drawRoundedRect(QRectF(-13.0, -23.0, 26.0, 46.0), 4.0, 4.0)
+
+        painter.setPen(QPen(QColor(42, 48, 55), 1))
+        painter.setBrush(QColor(188, 217, 235))
+        painter.drawRoundedRect(QRectF(-8.0, -13.0, 16.0, 16.0), 3.0, 3.0)
+
+        painter.setBrush(QColor(224, 232, 238))
+        painter.drawRoundedRect(QRectF(-7.0, -20.0, 14.0, 6.0), 2.0, 2.0)
+
+        painter.setBrush(QColor(34, 37, 41))
+        painter.drawRoundedRect(QRectF(-18.0, -17.0, 5.0, 11.0), 2.0, 2.0)
+        painter.drawRoundedRect(QRectF(13.0, -17.0, 5.0, 11.0), 2.0, 2.0)
+        painter.drawRoundedRect(QRectF(-18.0, 7.0, 5.0, 11.0), 2.0, 2.0)
+        painter.drawRoundedRect(QRectF(13.0, 7.0, 5.0, 11.0), 2.0, 2.0)
+
+        painter.setPen(QPen(QColor(30, 34, 38), 2))
+        painter.drawLine(QPointF(0.0, -23.0), QPointF(0.0, -32.0))
+
+        painter.restore()
 
     def draw_overlay(self, painter, rect):
         painter.setPen(QColor(35, 40, 45))

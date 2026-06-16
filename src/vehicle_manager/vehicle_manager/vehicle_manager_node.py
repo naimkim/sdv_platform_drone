@@ -36,7 +36,8 @@ class VehicleManagerNode(Node):
 
     def __init__(self):
         super().__init__('vehicle_manager')
-
+        # =============================
+        # Members
         self.state = VehicleState_e.INIT
         self.received_initial_battery_status = False
         self.mission_duration_sec = 5.0
@@ -69,13 +70,14 @@ class VehicleManagerNode(Node):
                 'alive': False,
             },
         }
-
+        # =============================
         if DEBUG_TASK:
             self.cnt_1ms = 0
             self.cnt_10ms = 0
             self.cnt_100ms = 0
             self.cnt_1000ms = 0
-
+        # =============================
+        # Topic Pub/Sub
         self.state_pub = self.create_publisher(
             VehicleState,
             '/ecu/vehicle/status',
@@ -95,13 +97,19 @@ class VehicleManagerNode(Node):
             self.heart_beat_callback,
             10
         )
+        # =============================
 
+        # =============================
+        # Service
         self.start_mission_service = self.create_service(
             StartMission,
             '/ecu/vehicle/start_mission',
             self.start_mission_callback
         )
+        # =============================
 
+        # =============================
+        # Create Task (Periodically)
         if TASK_USE_1MS:
             self.timer_1ms = self.create_timer(0.001, self.Task_1ms)
         if TASK_USE_10MS:
@@ -110,10 +118,12 @@ class VehicleManagerNode(Node):
             self.timer_100ms = self.create_timer(0.1, self.Task_100ms)
         if TASK_USE_1000MS:
             self.timer_1000ms = self.create_timer(1.0, self.Task_1000ms)
-
+        # =============================
         if DEBUG_VEHICLE_MANAGER:
             self.get_logger().info('Vehicle Manager Started')
 
+# =============================
+# Callbacks
     def battery_callback(self, msg):
         self.received_initial_battery_status = True
 
@@ -171,7 +181,10 @@ class VehicleManagerNode(Node):
 
     def security_callback(self, msg):
         self.change_state(VehicleState_e.EMERGENCY)
+# =============================
 
+# =============================
+# Task Implementations
     def Task_1ms(self):
         if DEBUG_TASK:
             self.cnt_1ms += 1
@@ -206,7 +219,10 @@ class VehicleManagerNode(Node):
             self.check_low_battery_recovery()
 
         self.publish_vehicle_state()
+# =============================
 
+# =============================
+# Functions
     def publish_vehicle_state(self):
         msg = VehicleState()
         msg.state = int(self.state)
@@ -305,7 +321,7 @@ class VehicleManagerNode(Node):
 
         if elapsed_sec >= LOW_BATTERY_RECOVER_HOLD_SEC:
             self.change_state(VehicleState_e.INIT)
-
+# =============================
 
 def main(args=None):
     rclpy.init(args=args)
