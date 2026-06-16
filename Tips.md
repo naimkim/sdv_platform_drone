@@ -51,8 +51,15 @@ ros2 pkg create --build-type <빌드_타입> <패키지_이름>
 ## build
 
 ```bash
+colcon build
+# 워크스페이스 전체 패키지 빌드
+
 colcon build --packages-select "폴더명"
 # --symlink-install : python 의 경우 install 폴더와 연동 되어 별도 빌드 필요X
+
+colcon build --packages-up-to "폴더명"
+# 폴더명 의 의존 패키지까지 같이 빌드
+# package.xml에 적힌 exec_depend/build_depend 기준
 
 # 성공 후 반영
 source install/setup.bash
@@ -67,4 +74,17 @@ ros2 interface list | grep sdv
 
 ros2 run <pkg_name> <node_name>
 
+```
+
+
+## launch
+
+``` bash
+
+ros2 pkg create sdv_bringup \
+  --build-type ament_python \
+  --dependencies launch launch_ros
+
+source install/setup.bash
+ros2 launch sdv_bringup sdv_system.launch.py
 ```
