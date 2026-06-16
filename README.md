@@ -54,6 +54,9 @@ ROS2 DDS 기반 통신을 활용하여 차량 ECU 구조를 모사한 분산 시
 #### 상태(State)
 
 ```text
+state
+mission_active
+
 INIT
 READY
 MISSION
@@ -61,6 +64,11 @@ LOW_BATTERY
 FAULT
 EMERGENCY
 ```
+
+`mission_active`는 현재 상태에서 실제 주행 미션이 활성화되어 있는지를 나타낸다.
+예를 들어 LOW_BATTERY 상태에서도 StartMission 요청이 성공하면
+`state=LOW_BATTERY`, `mission_active=true`로 발행되며,
+Motor ECU는 이를 limp mode 주행으로 처리한다.
 
 ---
 
@@ -494,13 +502,30 @@ Sensor ECU는 주기적으로 장애물 정보를 발행해야 한다.
 
 ### FR-004
 
-Motor ECU는 Vehicle State에 따라 모터 상태를 제어하고 MotorStatus를 발행해야 한다.
+Motor ECU는 Vehicle State와 mission_active에 따라 모터 상태를 제어하고 MotorStatus를 발행해야 한다.
+
+```text
+MISSION + mission_active=true
+  -> normal speed
+
+LOW_BATTERY + mission_active=true
+  -> limp speed
+
+LOW_BATTERY + mission_active=false
+  -> stop
+
+FAULT / EMERGENCY
+  -> stop / emergency stop
+```
 
 ---
 
 ### FR-005
 
-Vehicle Manager는 SOC ≤ 20% 조건에서 LOW_BATTERY 상태로 진입해야 한다.
+Vehicle Manager는 SOC <= 20% 조건에서 LOW_BATTERY 상태로 진입해야 한다.
+LOW_BATTERY 상태에서도 StartMission 요청은 허용하되,
+상태는 LOW_BATTERY로 유지하고 mission_active=true를 발행해야 한다.
+SOC >= 25% 조건이 5초 이상 유지되면 INIT 상태로 복귀하여 재초기화 과정을 수행해야 한다.
 
 ---
 
@@ -627,7 +652,15 @@ LOW_BATTERY
 
 ↓
 
-Return Home
+Start Mission
+
+↓
+
+LOW_BATTERY + mission_active=true
+
+↓
+
+Limp Mode
 
 ↓
 

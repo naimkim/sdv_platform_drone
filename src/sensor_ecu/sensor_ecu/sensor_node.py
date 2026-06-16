@@ -9,8 +9,8 @@ from sdv_interfaces.srv import CalibrateSensor
 from sensor_ecu.sensor_driver import SimSensorDriver
 
 # Node Config VARs
-DEBUG = True
-DEBUG_OBSTACLE_MSG = True
+DEBUG = False
+DEBUG_OBSTACLE_MSG = False
 DEBUG_VEHICLE_STATE_MSG = False
 TASK_USE_1MS = False
 TASK_USE_10MS = False

@@ -6,13 +6,14 @@ from sdv_interfaces.msg import MotorStatus
 from sdv_interfaces.msg import VehicleState
 
 # Node Config VARs
-DEBUG = True
+DEBUG = False
 DEBUG_MOTOR_STATUS_MSG = False
 DEBUG_VEHICLE_STATE_MSG = False
 TASK_USE_1MS = False
 TASK_USE_10MS = False
 TASK_USE_100MS = True
 TASK_USE_1000MS = True
+LOW_BATTERY_TARGET_LINEAR = 0.1
 
 
 class MotorNode(Node):
@@ -30,6 +31,7 @@ class MotorNode(Node):
         self.mission_target_linear = self.get_parameter('target_linear').value
         self.mission_target_angular = self.get_parameter('target_angular').value
         self.last_vehicle_state = VehicleState.INIT
+        self.last_mission_active = False
         self.motor_driver = self.create_motor_driver(self.driver_mode)
         # =============================
 
@@ -76,11 +78,13 @@ class MotorNode(Node):
 # CALLBACKs
     def vehicle_state_callback(self, msg):
         self.last_vehicle_state = msg.state
+        self.last_mission_active = msg.mission_active
         self.apply_vehicle_state_policy()
 
         if DEBUG_VEHICLE_STATE_MSG:
             self.get_logger().info(
-                f'Current Vehicle State = {msg.state}'
+                f'Current Vehicle State = {msg.state}, '
+                f'mission_active={msg.mission_active}'
             )
 # =================== End of CALLBACKs
 
@@ -107,13 +111,22 @@ class MotorNode(Node):
         return SimMotorDriver()
 
     def apply_vehicle_state_policy(self):
-        if self.last_vehicle_state == VehicleState.MISSION:
+        if (
+            self.last_vehicle_state == VehicleState.MISSION and
+            self.last_mission_active
+        ):
             self.motor_driver.set_velocity(
                 self.mission_target_linear,
                 self.mission_target_angular
             )
-        elif self.last_vehicle_state == VehicleState.LOW_BATTERY:
-            self.motor_driver.stop()
+        elif (
+            self.last_vehicle_state == VehicleState.LOW_BATTERY and
+            self.last_mission_active
+        ):
+            self.motor_driver.set_velocity(
+                LOW_BATTERY_TARGET_LINEAR,
+                0.0
+            )
         elif self.last_vehicle_state == VehicleState.EMERGENCY:
             self.motor_driver.emergency_stop()
         elif self.last_vehicle_state == VehicleState.FAULT:

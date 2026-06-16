@@ -78,7 +78,7 @@ STATE_COLORS = {
 
 class GuiSignals(QObject):
     node_list_received = pyqtSignal(object)
-    vehicle_state_received = pyqtSignal(int)
+    vehicle_state_received = pyqtSignal(int, bool)
     battery_status_received = pyqtSignal(float, float, float)
     obstacle_info_received = pyqtSignal(bool, float, float)
     motor_status_received = pyqtSignal(float, float, float, float, bool)
@@ -159,7 +159,10 @@ class SdvTestGuiRosNode(Node):
         )
 
     def vehicle_state_callback(self, msg):
-        self.gui_signals.vehicle_state_received.emit(int(msg.state))
+        self.gui_signals.vehicle_state_received.emit(
+            int(msg.state),
+            bool(msg.mission_active)
+        )
 
     def battery_status_callback(self, msg):
         self.gui_signals.battery_status_received.emit(
@@ -268,6 +271,7 @@ class SimulationView(QWidget):
         self.obstacle_angle_deg = 0.0
 
         self.vehicle_state = VehicleState.INIT
+        self.mission_active = False
         self.last_update_monotonic = time.monotonic()
 
         self.update_timer = QTimer(self)
@@ -275,8 +279,9 @@ class SimulationView(QWidget):
         self.update_timer.timeout.connect(self.step_simulation)
         self.update_timer.start()
 
-    def set_vehicle_state(self, state):
+    def set_vehicle_state(self, state, mission_active):
         self.vehicle_state = state
+        self.mission_active = mission_active
         self.update()
 
     def set_obstacle(self, detected, distance, angle):
@@ -461,8 +466,10 @@ class SimulationView(QWidget):
         painter.setFont(QFont(GUI_FONT_FAMILY, 9))
 
         state_name = VEHICLE_STATE_NAMES.get(self.vehicle_state, 'UNKNOWN')
+        mission_text = 'active' if self.mission_active else 'idle'
         text = (
             f'2D Simulation | state={state_name} | '
+            f'mission={mission_text} | '
             f'v={self.current_linear:.2f} m/s | w={self.current_angular:.2f} rad/s'
         )
         painter.drawText(rect.adjusted(12, 8, -12, -8), Qt.AlignLeft | Qt.AlignTop, text)
@@ -476,6 +483,7 @@ class DashboardWidget(QWidget):
         self.setMinimumHeight(150)
 
         self.vehicle_state = VehicleState.INIT
+        self.mission_active = False
         self.soc = 0.0
         self.voltage = 0.0
         self.current = 0.0
@@ -485,8 +493,9 @@ class DashboardWidget(QWidget):
         self.obstacle_detected = False
         self.obstacle_distance = 0.0
 
-    def set_vehicle_state(self, state):
+    def set_vehicle_state(self, state, mission_active):
         self.vehicle_state = state
+        self.mission_active = mission_active
         self.update()
 
     def set_battery_status(self, soc, voltage, current):
@@ -547,14 +556,19 @@ class DashboardWidget(QWidget):
             state_name
         )
 
-        motor_color = QColor(36, 128, 74) if self.motor_enabled else QColor(145, 150, 156)
+        motor_color = (
+            QColor(36, 128, 74)
+            if self.motor_enabled
+            else QColor(145, 150, 156)
+        )
         painter.setBrush(motor_color)
         painter.drawEllipse(QPointF(rect.left() + 20, rect.top() + 88), 9, 9)
         painter.setFont(QFont(GUI_FONT_FAMILY, 10))
+        mission_text = 'Mission Active' if self.mission_active else 'Mission Idle'
         painter.drawText(
             QRectF(rect.left() + 40, rect.top() + 76, rect.width() - 44, 28),
             Qt.AlignVCenter | Qt.AlignLeft,
-            'Motor Enabled' if self.motor_enabled else 'Motor Disabled'
+            mission_text
         )
 
     def draw_motion_gauges(self, painter, rect):
@@ -926,11 +940,12 @@ class MainWindow(QMainWindow):
         self.node_list.clear()
         self.node_list.addItems(node_names)
 
-    def update_vehicle_state(self, state):
+    def update_vehicle_state(self, state, mission_active):
         state_name = VEHICLE_STATE_NAMES.get(state, f'UNKNOWN({state})')
-        self.state_label.setText(state_name)
-        self.simulation_view.set_vehicle_state(state)
-        self.dashboard_widget.set_vehicle_state(state)
+        mission_text = 'ACTIVE' if mission_active else 'IDLE'
+        self.state_label.setText(f'{state_name} / {mission_text}')
+        self.simulation_view.set_vehicle_state(state, mission_active)
+        self.dashboard_widget.set_vehicle_state(state, mission_active)
 
     def update_battery_status(self, soc, voltage, current):
         self.battery_soc_label.setText(f'{soc:.1f} %')

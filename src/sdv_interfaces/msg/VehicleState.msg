@@ -1,4 +1,5 @@
 uint8 state
+bool mission_active
 uint8 INIT=0
 uint8 READY=1
 uint8 MISSION=2

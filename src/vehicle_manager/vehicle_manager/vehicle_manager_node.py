@@ -12,7 +12,7 @@ from sdv_interfaces.srv import StartMission
 # Node Config VARs
 DEBUG_VEHICLE_MANAGER = True
 DEBUG_BATTERY_MSG = False
-DEBUG_HEARTBEAT_MSG = True
+DEBUG_HEARTBEAT_MSG = False
 DEBUG_TASK = False
 TASK_USE_1MS = False
 TASK_USE_10MS = False
@@ -40,6 +40,7 @@ class VehicleManagerNode(Node):
         # Members
         self.state = VehicleState_e.INIT
         self.received_initial_battery_status = False
+        self.mission_active = False
         self.mission_duration_sec = 5.0
         self.mission_started_ns = None
         self.low_battery_recovery_started_ns = None
@@ -128,7 +129,10 @@ class VehicleManagerNode(Node):
         self.received_initial_battery_status = True
 
         if msg.soc <= LOW_BATTERY_ENTER_SOC:
-            if self.state == VehicleState_e.MISSION:
+            if (
+                self.state == VehicleState_e.MISSION or
+                self.state == VehicleState_e.READY
+            ):
                 self.change_state(VehicleState_e.LOW_BATTERY)
             self.low_battery_recovery_started_ns = None
         elif self.state == VehicleState_e.LOW_BATTERY:
@@ -162,6 +166,7 @@ class VehicleManagerNode(Node):
     def start_mission_callback(self, request, response):
         if self.state == VehicleState_e.READY:
             self.mission_started_ns = self.get_clock().now().nanoseconds
+            self.mission_active = True
             self.change_state(VehicleState_e.MISSION)
             response.success = True
             response.message = 'Mission started'
@@ -170,6 +175,19 @@ class VehicleManagerNode(Node):
         if self.state == VehicleState_e.MISSION:
             response.success = True
             response.message = 'Mission already running'
+            return response
+
+        if self.state == VehicleState_e.LOW_BATTERY:
+            if self.mission_active:
+                response.success = True
+                response.message = 'Low battery mission already running'
+                return response
+
+            self.mission_started_ns = self.get_clock().now().nanoseconds
+            self.mission_active = True
+            self.publish_vehicle_state()
+            response.success = True
+            response.message = 'Low battery mission started in limp mode'
             return response
 
         response.success = False
@@ -214,8 +232,12 @@ class VehicleManagerNode(Node):
         elif self.state == VehicleState_e.MISSION:
             if self.is_mission_complete():
                 self.mission_started_ns = None
+                self.mission_active = False
                 self.change_state(VehicleState_e.READY)
         elif self.state == VehicleState_e.LOW_BATTERY:
+            if self.is_mission_complete():
+                self.mission_started_ns = None
+                self.mission_active = False
             self.check_low_battery_recovery()
 
         self.publish_vehicle_state()
@@ -226,17 +248,21 @@ class VehicleManagerNode(Node):
     def publish_vehicle_state(self):
         msg = VehicleState()
         msg.state = int(self.state)
+        msg.mission_active = bool(self.mission_active)
         self.state_pub.publish(msg)
 
     def change_state(self, new_state):
         if self.state == new_state:
             return
 
-        if (
-            self.state == VehicleState_e.MISSION and
-            new_state != VehicleState_e.MISSION
+        if new_state in (
+            VehicleState_e.INIT,
+            VehicleState_e.READY,
+            VehicleState_e.FAULT,
+            VehicleState_e.EMERGENCY,
         ):
             self.mission_started_ns = None
+            self.mission_active = False
 
         if new_state != VehicleState_e.LOW_BATTERY:
             self.low_battery_recovery_started_ns = None
@@ -322,6 +348,7 @@ class VehicleManagerNode(Node):
         if elapsed_sec >= LOW_BATTERY_RECOVER_HOLD_SEC:
             self.change_state(VehicleState_e.INIT)
 # =============================
+
 
 def main(args=None):
     rclpy.init(args=args)

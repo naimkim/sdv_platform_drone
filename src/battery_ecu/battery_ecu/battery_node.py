@@ -8,8 +8,8 @@ from sdv_interfaces.msg import VehicleState
 from datetime import datetime
 
 # Node Config VARs
-DEBUG_BATTERY_ECU = True
-DEBUG_VEHICLE_STATE_MSG = True
+DEBUG_BATTERY_ECU = False
+DEBUG_VEHICLE_STATE_MSG = False
 DEBUG_TASK = False
 TASK_USE_1MS = False
 TASK_USE_10MS = False
@@ -24,8 +24,8 @@ class BatteryNode(Node):
         # =============================
         # Members
         self.soc = 100.0
-        self.voltage = 400.0
-        self.current = 10.0
+        self.voltage = 48.0
+        self.current = 5.0
         if DEBUG_TASK:
             self.cnt_1ms = 0
             self.cnt_10ms = 0
@@ -118,16 +118,10 @@ class BatteryNode(Node):
                 f'Node={hb_msg.ecu_name} , timestamp={hb_msg.timestamp}'
             )
 
-        self.soc -= 1.0
-        self.voltage -= 1.0
-        self.current += 1.0
-
+        self.soc -= 2.5
         if self.soc < 0.0:
             self.soc = 100.0
-        if self.voltage < 0.0:
-            self.voltage = 400.0
-        if self.current > 100.0:
-            self.current = 10.0
+
 # ===================
 
 # ===================    
