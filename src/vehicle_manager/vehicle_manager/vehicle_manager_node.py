@@ -7,6 +7,7 @@ from sdv_interfaces.msg import BatteryStatus
 from sdv_interfaces.msg import DiagnosticEvent
 from sdv_interfaces.msg import Heartbeat
 from sdv_interfaces.msg import ObstacleInfo
+from sdv_interfaces.msg import SecurityEvent
 from sdv_interfaces.msg import VehicleState
 from sdv_interfaces.srv import StartMission
 
@@ -129,6 +130,13 @@ class VehicleManagerNode(Node):
             ObstacleInfo,
             '/ecu/obstacle/info',
             self.obstacle_callback,
+            10
+        )
+
+        self.security_event_subscription = self.create_subscription(
+            SecurityEvent,
+            '/ecu/security/event',
+            self.security_event_callback,
             10
         )
         # =============================
@@ -266,6 +274,18 @@ class VehicleManagerNode(Node):
         self.change_state(VehicleState_e.EMERGENCY)
 
     def security_callback(self, msg):
+        self.change_state(VehicleState_e.EMERGENCY)
+
+    def security_event_callback(self, msg):
+        if msg.severity < DIAGNOSTIC_SEVERITY_ERROR:
+            return
+
+        if DEBUG_VEHICLE_MANAGER:
+            self.get_logger().error(
+                f'Security event received: attack_type={msg.attack_type}, '
+                f'severity={msg.severity}, description={msg.description}'
+            )
+
         self.change_state(VehicleState_e.EMERGENCY)
 # =============================
 

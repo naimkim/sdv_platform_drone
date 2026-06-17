@@ -4,6 +4,7 @@ from rclpy.node import Node
 from sdv_interfaces.msg import BatteryStatus
 from sdv_interfaces.msg import Heartbeat
 from sdv_interfaces.msg import MotorStatus
+from sdv_interfaces.msg import SecurityEvent
 from sdv_interfaces.msg import VehicleState
 
 
@@ -11,6 +12,7 @@ from sdv_interfaces.msg import VehicleState
 DEBUG = False
 DEBUG_MONITORED_TOPICS = False
 TASK_USE_1000MS = True
+SECURITY_SEVERITY_ERROR = 2
 
 BATTERY_SOC_MIN = 0.0
 BATTERY_SOC_MAX = 100.0
@@ -19,6 +21,13 @@ BATTERY_VOLTAGE_MAX = 80.0
 BATTERY_CURRENT_ABS_MAX = 500.0
 BATTERY_SOC_MAX_RATE_PER_SEC = 15.0
 BATTERY_ANOMALY_LOG_COOLDOWN_SEC = 3.0
+
+MOTOR_TARGET_LINEAR_ABS_MAX = 1.0
+MOTOR_CURRENT_LINEAR_ABS_MAX = 1.2
+MOTOR_TARGET_ANGULAR_ABS_MAX = 2.0
+MOTOR_CURRENT_ANGULAR_ABS_MAX = 2.5
+MOTOR_DISABLED_SPEED_EPSILON = 0.05
+MOTOR_ANOMALY_LOG_COOLDOWN_SEC = 3.0
 
 
 class SecurityNode(Node):
@@ -33,6 +42,9 @@ class SecurityNode(Node):
         self.last_battery_anomalies = []
         self.last_battery_anomaly_log_ns = {}
         self.last_motor_status = None
+        self.last_motor_status_ns = None
+        self.last_motor_anomalies = []
+        self.last_motor_anomaly_log_ns = {}
         self.last_vehicle_status = None
         self.last_monitored_topic_ns = {
             '/ecu/battery/status': None,
@@ -43,6 +55,12 @@ class SecurityNode(Node):
         self.heart_beat_publisher = self.create_publisher(
             Heartbeat,
             '/ecu/heartbeat',
+            10
+        )
+
+        self.security_event_publisher = self.create_publisher(
+            SecurityEvent,
+            '/ecu/security/event',
             10
         )
 
@@ -85,8 +103,9 @@ class SecurityNode(Node):
             )
 
     def motor_status_callback(self, msg):
+        now_ns = self.update_monitored_topic('/ecu/motor/status')
         self.last_motor_status = msg
-        self.update_monitored_topic('/ecu/motor/status')
+        self.last_motor_status_ns = now_ns
 
         if DEBUG_MONITORED_TOPICS:
             self.get_logger().info(
@@ -108,6 +127,7 @@ class SecurityNode(Node):
     def Task_1000ms(self):
         self.publish_heartbeat()
         self.monitor_battery_security()
+        self.monitor_motor_security()
 
     def update_monitored_topic(self, topic_name):
         now_ns = self.get_clock().now().nanoseconds
@@ -204,7 +224,98 @@ class SecurityNode(Node):
                 return
 
         self.last_battery_anomaly_log_ns[anomaly_key] = now_ns
+        self.publish_security_event(
+            anomaly_key,
+            SECURITY_SEVERITY_ERROR,
+            description
+        )
         self.get_logger().warn(f'Battery anomaly detected: {description}')
+
+    def monitor_motor_security(self):
+        if self.last_motor_status is None:
+            return
+
+        if self.last_motor_status_ns is None:
+            return
+
+        anomalies = self.detect_motor_anomalies(self.last_motor_status)
+        self.last_motor_anomalies = anomalies
+
+        for anomaly_key, description in anomalies:
+            self.report_motor_anomaly(
+                anomaly_key,
+                description,
+                self.last_motor_status_ns
+            )
+
+    def detect_motor_anomalies(self, msg):
+        anomalies = []
+
+        if abs(msg.target_linear) > MOTOR_TARGET_LINEAR_ABS_MAX:
+            anomalies.append((
+                'MOTOR_TARGET_LINEAR_RANGE',
+                'Invalid motor target linear speed: '
+                f'{msg.target_linear:.2f}m/s'
+            ))
+
+        if abs(msg.current_linear) > MOTOR_CURRENT_LINEAR_ABS_MAX:
+            anomalies.append((
+                'MOTOR_CURRENT_LINEAR_RANGE',
+                'Invalid motor current linear speed: '
+                f'{msg.current_linear:.2f}m/s'
+            ))
+
+        if abs(msg.target_angular) > MOTOR_TARGET_ANGULAR_ABS_MAX:
+            anomalies.append((
+                'MOTOR_TARGET_ANGULAR_RANGE',
+                'Invalid motor target angular speed: '
+                f'{msg.target_angular:.2f}rad/s'
+            ))
+
+        if abs(msg.current_angular) > MOTOR_CURRENT_ANGULAR_ABS_MAX:
+            anomalies.append((
+                'MOTOR_CURRENT_ANGULAR_RANGE',
+                'Invalid motor current angular speed: '
+                f'{msg.current_angular:.2f}rad/s'
+            ))
+
+        if (
+            not msg.enabled and
+            (
+                abs(msg.current_linear) > MOTOR_DISABLED_SPEED_EPSILON or
+                abs(msg.current_angular) > MOTOR_DISABLED_SPEED_EPSILON
+            )
+        ):
+            anomalies.append((
+                'MOTOR_DISABLED_WITH_SPEED',
+                'Motor reports speed while disabled'
+            ))
+
+        return anomalies
+
+    def report_motor_anomaly(self, anomaly_key, description, now_ns):
+        last_log_ns = self.last_motor_anomaly_log_ns.get(anomaly_key)
+
+        if last_log_ns is not None:
+            elapsed_sec = (now_ns - last_log_ns) / 1_000_000_000.0
+            if elapsed_sec < MOTOR_ANOMALY_LOG_COOLDOWN_SEC:
+                return
+
+        self.last_motor_anomaly_log_ns[anomaly_key] = now_ns
+        self.publish_security_event(
+            anomaly_key,
+            SECURITY_SEVERITY_ERROR,
+            description
+        )
+        self.get_logger().warn(f'Motor anomaly detected: {description}')
+
+    def publish_security_event(self, attack_type, severity, description):
+        msg = SecurityEvent()
+        msg.attack_type = attack_type
+        msg.severity = int(severity)
+        msg.description = description
+
+        self.security_event_publisher.publish(msg)
 
     def publish_heartbeat(self):
         msg = Heartbeat()

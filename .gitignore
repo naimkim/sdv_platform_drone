@@ -25,6 +25,8 @@ venv/
 .idea/
 *.swp
 *.swo
+.codex
+.agents
 
 # OS files
 .DS_Store

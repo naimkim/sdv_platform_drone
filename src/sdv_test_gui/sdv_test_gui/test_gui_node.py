@@ -34,6 +34,7 @@ from sdv_interfaces.msg import DiagnosticEvent
 from sdv_interfaces.msg import Heartbeat
 from sdv_interfaces.msg import MotorStatus
 from sdv_interfaces.msg import ObstacleInfo
+from sdv_interfaces.msg import SecurityEvent
 from sdv_interfaces.msg import VehicleState
 from sdv_interfaces.srv import StartMission
 
@@ -86,6 +87,7 @@ class GuiSignals(QObject):
     motor_status_received = pyqtSignal(float, float, float, float, bool)
     heartbeat_received = pyqtSignal(str, str, float)
     diagnostic_event_received = pyqtSignal(str, int, str, str)
+    security_event_received = pyqtSignal(str, int, str, str)
     service_result_received = pyqtSignal(str, bool, str)
 
 
@@ -155,6 +157,13 @@ class SdvTestGuiRosNode(Node):
             10
         )
 
+        self.security_event_sub = self.create_subscription(
+            SecurityEvent,
+            '/ecu/security/event',
+            self.security_event_callback,
+            10
+        )
+
         self.node_monitor_timer = self.create_timer(
             1.0,
             self.publish_node_list_to_gui
@@ -199,6 +208,14 @@ class SdvTestGuiRosNode(Node):
     def diagnostic_event_callback(self, msg):
         self.gui_signals.diagnostic_event_received.emit(
             msg.ecu_name,
+            int(msg.severity),
+            msg.description,
+            format_wall_time()
+        )
+
+    def security_event_callback(self, msg):
+        self.gui_signals.security_event_received.emit(
+            msg.attack_type,
             int(msg.severity),
             msg.description,
             format_wall_time()
@@ -716,6 +733,7 @@ class MainWindow(QMainWindow):
         self.dashboard_widget = DashboardWidget()
 
         self.node_list = QListWidget()
+        self.node_list.setMinimumHeight(120)
 
         self.state_label = QLabel('NO DATA')
         self.state_label.setStyleSheet('font-size: 24px; font-weight: 600;')
@@ -735,6 +753,10 @@ class MainWindow(QMainWindow):
         self.motor_current_angular_label = QLabel('-')
 
         self.service_result_label = QLabel('-')
+        self.security_status_label = QLabel('NORMAL')
+        self.security_status_label.setStyleSheet(
+            'font-size: 18px; font-weight: 600; color: #247a45;'
+        )
 
         self.heartbeat_table = QTableWidget(len(ECU_NAMES), 3)
         self.heartbeat_table.setHorizontalHeaderLabels([
@@ -747,6 +769,8 @@ class MainWindow(QMainWindow):
             QHeaderView.Stretch
         )
         self.heartbeat_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.heartbeat_table.setMinimumHeight(190)
+        self.heartbeat_table.setAlternatingRowColors(True)
 
         self.heartbeat_rows = {}
         for row, ecu_name in enumerate(ECU_NAMES):
@@ -764,9 +788,36 @@ class MainWindow(QMainWindow):
         ])
         self.diagnostic_event_table.verticalHeader().setVisible(False)
         self.diagnostic_event_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeToContents
+        )
+        self.diagnostic_event_table.horizontalHeader().setSectionResizeMode(
+            3,
             QHeaderView.Stretch
         )
         self.diagnostic_event_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.diagnostic_event_table.setMinimumHeight(230)
+        self.diagnostic_event_table.setAlternatingRowColors(True)
+        self.diagnostic_event_table.setWordWrap(True)
+
+        self.security_event_table = QTableWidget(0, 4)
+        self.security_event_table.setHorizontalHeaderLabels([
+            'RX',
+            'Attack Type',
+            'Severity',
+            'Description',
+        ])
+        self.security_event_table.verticalHeader().setVisible(False)
+        self.security_event_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeToContents
+        )
+        self.security_event_table.horizontalHeader().setSectionResizeMode(
+            3,
+            QHeaderView.Stretch
+        )
+        self.security_event_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.security_event_table.setMinimumHeight(190)
+        self.security_event_table.setAlternatingRowColors(True)
+        self.security_event_table.setWordWrap(True)
 
     def create_simulator_widgets(self):
         self.soc_slider = QSlider(Qt.Horizontal)
@@ -804,6 +855,9 @@ class MainWindow(QMainWindow):
         self.gui_signals.diagnostic_event_received.connect(
             self.add_diagnostic_event
         )
+        self.gui_signals.security_event_received.connect(
+            self.add_security_event
+        )
         self.gui_signals.service_result_received.connect(self.update_service_result)
 
         self.soc_slider.valueChanged.connect(self.update_soc_label)
@@ -819,12 +873,9 @@ class MainWindow(QMainWindow):
         monitor_layout.addWidget(self.build_virtual_render_group())
         monitor_layout.addWidget(self.build_dashboard_group())
         monitor_layout.addWidget(self.build_node_monitor_group())
-        monitor_layout.addWidget(self.build_vehicle_state_group())
-        monitor_layout.addWidget(self.build_battery_monitor_group())
-        monitor_layout.addWidget(self.build_obstacle_monitor_group())
-        monitor_layout.addWidget(self.build_motor_monitor_group())
         monitor_layout.addWidget(self.build_heartbeat_monitor_group())
         monitor_layout.addWidget(self.build_diagnostic_event_group())
+        monitor_layout.addWidget(self.build_security_event_group())
 
         simulator_panel = QWidget()
         simulator_layout = QVBoxLayout(simulator_panel)
@@ -912,6 +963,13 @@ class MainWindow(QMainWindow):
         group = QGroupBox('Diagnostic Events')
         layout = QVBoxLayout(group)
         layout.addWidget(self.diagnostic_event_table)
+        return group
+
+    def build_security_event_group(self):
+        group = QGroupBox('Security Events')
+        layout = QVBoxLayout(group)
+        layout.addWidget(self.security_status_label)
+        layout.addWidget(self.security_event_table)
         return group
 
     def build_battery_simulator_group(self):
@@ -1050,6 +1108,42 @@ class MainWindow(QMainWindow):
         while self.diagnostic_event_table.rowCount() > 20:
             self.diagnostic_event_table.removeRow(
                 self.diagnostic_event_table.rowCount() - 1
+            )
+
+    def add_security_event(
+        self,
+        attack_type,
+        severity,
+        description,
+        received_time_text
+    ):
+        row = 0
+        self.security_event_table.insertRow(row)
+
+        severity_name = DIAGNOSTIC_SEVERITY_NAMES.get(
+            severity,
+            f'UNKNOWN({severity})'
+        )
+        self.security_status_label.setText(
+            f'{severity_name} - {attack_type}'
+        )
+        self.security_status_label.setStyleSheet(
+            'font-size: 18px; font-weight: 600; color: #a31f1f;'
+        )
+
+        self.security_event_table.setItem(
+            row,
+            0,
+            QTableWidgetItem(received_time_text)
+        )
+        self.security_event_table.setItem(row, 1, QTableWidgetItem(attack_type))
+        self.security_event_table.setItem(row, 2, QTableWidgetItem(severity_name))
+        self.security_event_table.setItem(row, 3, QTableWidgetItem(description))
+        self.security_event_table.resizeRowsToContents()
+
+        while self.security_event_table.rowCount() > 20:
+            self.security_event_table.removeRow(
+                self.security_event_table.rowCount() - 1
             )
 
     def update_soc_label(self, value):
