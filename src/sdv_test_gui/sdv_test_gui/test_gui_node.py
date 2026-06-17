@@ -44,9 +44,11 @@ WORLD_BOUNDARY_M = 4.0
 GUI_FONT_FAMILY = 'DejaVu Sans'
 
 ECU_NAMES = (
+    'vehicle_manager',
     'battery_ecu',
     'sensor_ecu',
     'motor_ecu',
+    'diagnostics_ecu',
     'security_ecu',
 )
 

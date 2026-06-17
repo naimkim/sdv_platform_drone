@@ -1,3 +1,4 @@
+from motor_ecu.motor_driver import HwMotorDriver
 from motor_ecu.motor_driver import SimMotorDriver
 import rclpy
 from rclpy.node import Node
@@ -104,6 +105,8 @@ class MotorNode(Node):
     def create_motor_driver(self, driver_mode):
         if driver_mode == 'sim':
             return SimMotorDriver()
+        if driver_mode == 'hw':
+            return HwMotorDriver()
 
         self.get_logger().warn(
             f'Unknown motor driver mode: {driver_mode}, fallback to sim'

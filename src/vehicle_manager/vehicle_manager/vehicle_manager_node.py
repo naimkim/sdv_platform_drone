@@ -4,7 +4,9 @@ import rclpy
 from rclpy.node import Node
 
 from sdv_interfaces.msg import BatteryStatus
+from sdv_interfaces.msg import DiagnosticEvent
 from sdv_interfaces.msg import Heartbeat
+from sdv_interfaces.msg import ObstacleInfo
 from sdv_interfaces.msg import VehicleState
 from sdv_interfaces.srv import StartMission
 
@@ -13,6 +15,7 @@ from sdv_interfaces.srv import StartMission
 DEBUG_VEHICLE_MANAGER = True
 DEBUG_BATTERY_MSG = False
 DEBUG_HEARTBEAT_MSG = False
+DEBUG_OBSTACLE_MSG = False
 DEBUG_TASK = False
 TASK_USE_1MS = False
 TASK_USE_10MS = False
@@ -21,6 +24,7 @@ TASK_USE_1000MS = True
 LOW_BATTERY_ENTER_SOC = 20.0
 LOW_BATTERY_RECOVER_SOC = 25.0
 LOW_BATTERY_RECOVER_HOLD_SEC = 5.0
+DIAGNOSTIC_SEVERITY_ERROR = 2
 
 
 class VehicleState_e(IntEnum):
@@ -44,6 +48,9 @@ class VehicleManagerNode(Node):
         self.mission_duration_sec = 5.0
         self.mission_started_ns = None
         self.low_battery_recovery_started_ns = None
+        self.obstacle_detected = False
+        self.obstacle_stop_active = False
+        self.resume_after_obstacle_clear = False
 
         self.ecu_health = {
             'battery_ecu': {
@@ -64,6 +71,12 @@ class VehicleManagerNode(Node):
                 'last_seen_ns': None,
                 'alive': False,
             },
+            'diagnostics_ecu': {
+                'required': False,
+                'timeout_sec': 5.0,
+                'last_seen_ns': None,
+                'alive': False,
+            },
             'security_ecu': {
                 'required': False,
                 'timeout_sec': 5.0,
@@ -79,6 +92,12 @@ class VehicleManagerNode(Node):
             self.cnt_1000ms = 0
         # =============================
         # Topic Pub/Sub
+        self.heart_beat_publisher = self.create_publisher(
+            Heartbeat,
+            '/ecu/heartbeat',
+            10
+        )
+
         self.state_pub = self.create_publisher(
             VehicleState,
             '/ecu/vehicle/status',
@@ -96,6 +115,20 @@ class VehicleManagerNode(Node):
             Heartbeat,
             '/ecu/heartbeat',
             self.heart_beat_callback,
+            10
+        )
+
+        self.diagnostic_event_subscription = self.create_subscription(
+            DiagnosticEvent,
+            '/ecu/diagnostics/event',
+            self.diagnostic_event_callback,
+            10
+        )
+
+        self.obstacle_subscription = self.create_subscription(
+            ObstacleInfo,
+            '/ecu/obstacle/info',
+            self.obstacle_callback,
             10
         )
         # =============================
@@ -148,6 +181,9 @@ class VehicleManagerNode(Node):
     def heart_beat_callback(self, msg):
         ecu_name = msg.ecu_name
 
+        if ecu_name == 'vehicle_manager':
+            return
+
         if ecu_name not in self.ecu_health:
             self.get_logger().warn(f'Unknown ECU heartbeat: {ecu_name}')
             return
@@ -163,7 +199,39 @@ class VehicleManagerNode(Node):
                 f'TimeStamp={msg.timestamp}'
             )
 
+    def diagnostic_event_callback(self, msg):
+        if msg.severity < DIAGNOSTIC_SEVERITY_ERROR:
+            return
+
+        if msg.ecu_name == 'vehicle_manager':
+            return
+
+        if DEBUG_VEHICLE_MANAGER:
+            self.get_logger().error(
+                f'Diagnostic fault received: ecu={msg.ecu_name}, '
+                f'severity={msg.severity}, description={msg.description}'
+            )
+
+        self.change_state(VehicleState_e.EMERGENCY)
+
+    def obstacle_callback(self, msg):
+        if msg.detected:
+            self.handle_obstacle_detected(msg)
+        else:
+            self.handle_obstacle_cleared()
+
+        if DEBUG_OBSTACLE_MSG:
+            self.get_logger().info(
+                f'Obstacle detected={msg.detected}, '
+                f'distance={msg.distance:.2f}m, angle={msg.angle:.1f}deg'
+            )
+
     def start_mission_callback(self, request, response):
+        if self.obstacle_detected:
+            response.success = False
+            response.message = 'Cannot start mission while obstacle is detected'
+            return response
+
         if self.state == VehicleState_e.READY:
             self.mission_started_ns = self.get_clock().now().nanoseconds
             self.mission_active = True
@@ -195,7 +263,7 @@ class VehicleManagerNode(Node):
         return response
 
     def fault_callback(self, msg):
-        self.change_state(VehicleState_e.FAULT)
+        self.change_state(VehicleState_e.EMERGENCY)
 
     def security_callback(self, msg):
         self.change_state(VehicleState_e.EMERGENCY)
@@ -223,6 +291,8 @@ class VehicleManagerNode(Node):
             self.cnt_1000ms += 1
             self.get_logger().info(f'Task_1000ms , executed {self.cnt_1000ms}')
 
+        self.publish_heartbeat()
+
         if not self.check_heartbeat_timeout():
             return
 
@@ -230,12 +300,15 @@ class VehicleManagerNode(Node):
             if self.is_system_ready():
                 self.change_state(VehicleState_e.READY)
         elif self.state == VehicleState_e.MISSION:
+            if self.obstacle_stop_active:
+                return
+
             if self.is_mission_complete():
                 self.mission_started_ns = None
                 self.mission_active = False
                 self.change_state(VehicleState_e.READY)
         elif self.state == VehicleState_e.LOW_BATTERY:
-            if self.is_mission_complete():
+            if (not self.obstacle_stop_active) and self.is_mission_complete():
                 self.mission_started_ns = None
                 self.mission_active = False
             self.check_low_battery_recovery()
@@ -251,6 +324,13 @@ class VehicleManagerNode(Node):
         msg.mission_active = bool(self.mission_active)
         self.state_pub.publish(msg)
 
+    def publish_heartbeat(self):
+        msg = Heartbeat()
+        msg.ecu_name = 'vehicle_manager'
+        msg.timestamp = self.get_clock().now().nanoseconds
+
+        self.heart_beat_publisher.publish(msg)
+
     def change_state(self, new_state):
         if self.state == new_state:
             return
@@ -263,6 +343,7 @@ class VehicleManagerNode(Node):
         ):
             self.mission_started_ns = None
             self.mission_active = False
+            self.resume_after_obstacle_clear = False
 
         if new_state != VehicleState_e.LOW_BATTERY:
             self.low_battery_recovery_started_ns = None
@@ -308,7 +389,7 @@ class VehicleManagerNode(Node):
                             f'Required ECU timeout : {ecu_name}, '
                             f'elapsed={elapsed_sec:.1f}s'
                         )
-                    self.change_state(VehicleState_e.FAULT)
+                    self.change_state(VehicleState_e.EMERGENCY)
                     return False
 
                 if DEBUG_HEARTBEAT_MSG:
@@ -347,6 +428,51 @@ class VehicleManagerNode(Node):
 
         if elapsed_sec >= LOW_BATTERY_RECOVER_HOLD_SEC:
             self.change_state(VehicleState_e.INIT)
+
+    def handle_obstacle_detected(self, msg):
+        self.obstacle_detected = True
+
+        if self.obstacle_stop_active:
+            return
+
+        if not self.mission_active:
+            return
+
+        self.obstacle_stop_active = True
+        self.resume_after_obstacle_clear = (
+            self.state in (
+                VehicleState_e.MISSION,
+                VehicleState_e.LOW_BATTERY,
+            )
+        )
+
+        self.mission_active = False
+        self.publish_vehicle_state()
+
+        if DEBUG_VEHICLE_MANAGER:
+            self.get_logger().warn(
+                f'Obstacle stop: distance={msg.distance:.2f}m, '
+                f'angle={msg.angle:.1f}deg'
+            )
+
+    def handle_obstacle_cleared(self):
+        if not self.obstacle_detected:
+            return
+
+        was_stop_active = self.obstacle_stop_active
+        self.obstacle_detected = False
+        self.obstacle_stop_active = False
+
+        if self.resume_after_obstacle_clear:
+            self.mission_active = True
+            if self.mission_started_ns is None:
+                self.mission_started_ns = self.get_clock().now().nanoseconds
+            self.publish_vehicle_state()
+
+        self.resume_after_obstacle_clear = False
+
+        if DEBUG_VEHICLE_MANAGER and was_stop_active:
+            self.get_logger().info('Obstacle cleared')
 # =============================
 
 

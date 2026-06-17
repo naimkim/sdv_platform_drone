@@ -41,3 +41,22 @@ class SimSensorDriver(SensorDriverBase):
         self.calibrated = True
         self.start_time = time.monotonic()
         return True
+
+
+class HwSensorDriver(SensorDriverBase):
+
+    def __init__(self):
+        self.calibrated = False
+
+    def read_obstacle(self):
+        # Hardware integration point. Keep the vehicle safe until a concrete
+        # sensor backend is connected.
+        return {
+            'detected': False,
+            'distance': 0.0,
+            'angle': 0.0,
+        }
+
+    def calibrate(self):
+        self.calibrated = True
+        return True

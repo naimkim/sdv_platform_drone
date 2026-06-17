@@ -24,6 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'security_node = security_ecu.security_node:main',
         ],
     },
 )

@@ -1,3 +1,5 @@
+from enum import IntEnum
+
 import rclpy
 from rclpy.node import Node
 
@@ -5,7 +7,6 @@ from sdv_interfaces.msg import BatteryStatus
 from sdv_interfaces.msg import DiagnosticEvent
 from sdv_interfaces.msg import Heartbeat
 from sdv_interfaces.msg import VehicleState
-from enum import IntEnum
 
 # Node Config VARs
 DEBUG = True
@@ -13,6 +14,7 @@ TASK_USE_1MS = False
 TASK_USE_10MS = False
 TASK_USE_100MS = False
 TASK_USE_1000MS = True
+
 
 class DiagnosticSeverity_e(IntEnum):
     INFO = 0
@@ -34,6 +36,12 @@ class DiagnosticsNode(Node):
         self.last_vehicle_state = None
 
         self.ecu_health = {
+            "vehicle_manager": {
+                "required": True,
+                "timeout_sec": 3.0,
+                "last_seen_ns": None,
+                "alive": False,
+            },
             "battery_ecu": {
                 "required": True,
                 "timeout_sec": 3.0,
@@ -52,6 +60,12 @@ class DiagnosticsNode(Node):
                 "last_seen_ns": None,
                 "alive": False,
             },
+            "diagnostics_ecu": {
+                "required": False,
+                "timeout_sec": 5.0,
+                "last_seen_ns": None,
+                "alive": False,
+            },
             "security_ecu": {
                 "required": False,
                 "timeout_sec": 5.0,
@@ -63,6 +77,12 @@ class DiagnosticsNode(Node):
 
         # =============================
         # Create Pub / Sub
+        self.heart_beat_publisher = self.create_publisher(
+            Heartbeat,
+            '/ecu/heartbeat',
+            10
+        )
+
         self.diagnostic_event_pub = self.create_publisher(
             DiagnosticEvent,
             '/ecu/diagnostics/event',
@@ -129,7 +149,9 @@ class DiagnosticsNode(Node):
             )
             return
 
-        self.ecu_health[ecu_name]["last_seen_ns"] = self.get_clock().now().nanoseconds
+        self.ecu_health[ecu_name]["last_seen_ns"] = (
+            self.get_clock().now().nanoseconds
+        )
         self.ecu_health[ecu_name]["alive"] = True
 
     def vehicle_state_callback(self, msg):
@@ -155,11 +177,19 @@ class DiagnosticsNode(Node):
 # ===================
 # Task Implementation
     def Task_1000ms(self):
+        self.publish_heartbeat()
         self.check_heartbeat_timeout()
 # ===================
 
 # ===================
 # Functions
+    def publish_heartbeat(self):
+        msg = Heartbeat()
+        msg.ecu_name = 'diagnostics_ecu'
+        msg.timestamp = self.get_clock().now().nanoseconds
+
+        self.heart_beat_publisher.publish(msg)
+
     def publish_diagnostic_event(self, ecu_name, severity, description):
         event_key = f'{ecu_name}:{int(severity)}:{description}'
 
@@ -220,7 +250,8 @@ class DiagnosticsNode(Node):
                     self.publish_diagnostic_event(
                         ecu_name,
                         DiagnosticSeverity_e.WARN,
-                        f'Optional ECU timeout: {ecu_name}, elapsed={elapsed_sec:.1f}s'
+                        f'Optional ECU timeout: {ecu_name}, '
+                        f'elapsed={elapsed_sec:.1f}s'
                     )
 # ===================
 

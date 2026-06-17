@@ -71,3 +71,42 @@ class SimMotorDriver(MotorDriverBase):
         if current > target:
             return max(current - max_delta, target)
         return current
+
+
+class HwMotorDriver(MotorDriverBase):
+
+    def __init__(self):
+        self.target_linear = 0.0
+        self.current_linear = 0.0
+        self.target_angular = 0.0
+        self.current_angular = 0.0
+        self.enabled = False
+
+    def set_velocity(self, linear, angular):
+        self.enabled = True
+        self.target_linear = float(linear)
+        self.target_angular = float(angular)
+        self.current_linear = self.target_linear
+        self.current_angular = self.target_angular
+
+    def stop(self):
+        self.enabled = False
+        self.target_linear = 0.0
+        self.target_angular = 0.0
+        self.current_linear = 0.0
+        self.current_angular = 0.0
+
+    def emergency_stop(self):
+        self.stop()
+
+    def update(self, dt_sec):
+        pass
+
+    def get_status(self):
+        return {
+            'target_linear': self.target_linear,
+            'current_linear': self.current_linear,
+            'target_angular': self.target_angular,
+            'current_angular': self.current_angular,
+            'enabled': self.enabled,
+        }

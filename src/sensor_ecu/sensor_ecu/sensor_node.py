@@ -6,6 +6,7 @@ from sdv_interfaces.msg import ObstacleInfo
 from sdv_interfaces.msg import VehicleState
 from sdv_interfaces.srv import CalibrateSensor
 
+from sensor_ecu.sensor_driver import HwSensorDriver
 from sensor_ecu.sensor_driver import SimSensorDriver
 
 # Node Config VARs
@@ -16,6 +17,7 @@ TASK_USE_1MS = False
 TASK_USE_10MS = False
 TASK_USE_100MS = True
 TASK_USE_1000MS = True
+
 
 class SensorNode(Node):
 
@@ -111,6 +113,8 @@ class SensorNode(Node):
     def create_sensor_driver(self, driver_mode):
         if driver_mode == 'sim':
             return SimSensorDriver()
+        if driver_mode == 'hw':
+            return HwSensorDriver()
 
         self.get_logger().warn(
             f'Unknown sensor driver mode: {driver_mode}, fallback to sim'
