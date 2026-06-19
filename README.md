@@ -63,12 +63,17 @@ MISSION
 LOW_BATTERY
 FAULT
 EMERGENCY
+MRM
 ```
 
 `mission_active`는 현재 상태에서 실제 주행 미션이 활성화되어 있는지를 나타낸다.
 예를 들어 LOW_BATTERY 상태에서도 StartMission 요청이 성공하면
 `state=LOW_BATTERY`, `mission_active=true`로 발행되며,
 Motor ECU는 이를 limp mode 주행으로 처리한다.
+
+`MRM`은 주행계와 센서가 정상인 경미한 이상에서 수행하는
+Minimal Risk Maneuver 상태다. 현재는 Low Battery 발생 시 원점의
+충전 위치로 자동 복귀하는 데 사용한다.
 
 ---
 
@@ -160,6 +165,9 @@ Sensor ECU
 
 Motor ECU
   └─> /ecu/motor/status
+
+Motor ECU
+  └─> /ecu/vehicle/pose
 
 Vehicle Manager
   └─> /ecu/vehicle/status
@@ -423,6 +431,25 @@ READY 상태에서 MISSION 상태로 전이를 요청한다.
 
 ---
 
+### /ecu/vehicle/reset_emergency
+
+#### Client
+
+Test GUI
+
+#### Server
+
+Vehicle Manager ECU
+
+#### 기능
+
+EMERGENCY 상태를 INIT 상태로 초기화하고 ECU Heartbeat 및 Battery 상태를
+다시 확인하는 재초기화 절차를 수행한다.
+
+EMERGENCY가 아닌 상태에서는 요청을 거부한다.
+
+---
+
 ## 7. Action 설계
 
 ### /go_to_target
@@ -523,8 +550,10 @@ FAULT / EMERGENCY
 ### FR-005
 
 Vehicle Manager는 SOC <= 20% 조건에서 LOW_BATTERY 상태로 진입해야 한다.
-LOW_BATTERY 상태에서도 StartMission 요청은 허용하되,
-상태는 LOW_BATTERY로 유지하고 mission_active=true를 발행해야 한다.
+주행 또는 READY 상태에서 Low Battery가 발생하면 MRM 상태로 전이하고
+ReturnHome Action을 자동 호출해야 한다.
+복귀 중에는 limp mode 속도를 사용하며 원점 도착 후
+`LOW_BATTERY`, `mission_active=false` 상태로 대기해야 한다.
 SOC >= 25% 조건이 5초 이상 유지되면 INIT 상태로 복귀하여 재초기화 과정을 수행해야 한다.
 
 ---
@@ -639,6 +668,10 @@ Obstacle Detect
 Stop
 ```
 
+Test GUI의 `Start Mission` 버튼을 누르면 미션 시작 약 4초 후
+시뮬레이션 장애물이 발생한다. 장애물 감지 중에는 모터가 정지하고,
+장애물이 사라지면 남은 미션을 재개한다.
+
 ---
 
 ### Demo #2 : Low Battery
@@ -667,6 +700,10 @@ Limp Mode
 Stop
 ```
 
+Test GUI의 Battery Simulator에서 SOC를 15%로 설정해 발행한 뒤
+`Start Mission`을 누른다. `LOW_BATTERY / ACTIVE`와 0.1 m/s의
+limp mode를 확인한다.
+
 ---
 
 ### Demo #3 : ECU Failure
@@ -686,6 +723,10 @@ Diagnostics Fault
 
 Emergency Stop
 ```
+
+실행 중인 Sensor ECU 프로세스를 종료하면 약 3초 후
+Diagnostics ECU가 ERROR 이벤트를 발행하고 Vehicle Manager가
+EMERGENCY로 전이한다.
 
 ---
 
@@ -710,6 +751,90 @@ Security Event 발생
 
 Emergency Stop
 ```
+
+다른 터미널에서 다음 공격 노드를 실행한다.
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+ros2 run attack_node attack_node
+```
+
+공격 노드는 SOC 150% 메시지를 발행한다. Security ECU의
+`BATTERY_SOC_RANGE` 이벤트와 Vehicle Manager의 EMERGENCY 전이를
+확인한다.
+
+---
+
+## 10-1. 빌드 및 실행
+
+```bash
+source /opt/ros/jazzy/setup.bash
+colcon build --symlink-install
+source install/setup.bash
+ros2 launch sdv_bringup sdv_system.launch.py
+```
+
+GUI 없이 실행하려면 다음 launch argument를 사용한다.
+
+```bash
+ros2 launch sdv_bringup sdv_system.launch.py gui:=false
+```
+
+EMERGENCY 발생 후 GUI의 `Reset Emergency → INIT` 버튼을 누르면
+Vehicle Manager가 INIT으로 전이한 뒤 시스템 준비 상태를 다시 확인한다.
+정상 ECU가 모두 실행 중이면 READY로 자동 전이한다.
+
+GUI의 `Action Commands` 영역에서는 목표 X/Y를 입력하고
+`Go To Target` 또는 `Return Home`을 실행할 수 있다. Action Feedback은
+Progress 항목에 0~100%로 표시되고 최종 성공 여부는 Result 항목에
+표시된다.
+
+GUI에서 Action을 실행하면 READY 상태에서는 Start Mission을 자동으로
+요청한 뒤 Action Goal을 전송한다. LOW_BATTERY idle 상태에서도
+limp mode 미션을 자동 시작한다. INIT, FAULT, EMERGENCY 상태의 요청은
+거부된다.
+
+Action 수행 중 장애물이 감지되면 Goal을 실패 처리하지 않는다.
+Motor를 정지하고 Action 진행률과 미션 완료 시간을 일시정지한 뒤,
+장애물이 해제되면 같은 Goal을 이어서 수행한다. Action은 명시적 취소,
+FAULT 또는 EMERGENCY 발생 시에만 실패 또는 중단된다.
+
+Low Battery가 일반 미션 또는 GoToTarget 수행 중 발생하면 기존 Goal을
+중단하고 `MRM` 상태에서 ReturnHome을 자동 수행한다. Motor, Sensor,
+Heartbeat 또는 Security 중대 이상은 MRM을 수행하지 않고 즉시
+EMERGENCY Stop을 유지한다.
+
+Action 수행 중 MotorStatus가 계속 발행되므로 GUI의 Motor Status,
+Dashboard 및 2D Simulation이 실제 선속도·각속도에 따라 갱신된다.
+Motor ECU는 `/ecu/vehicle/pose`로 실제 시뮬레이션 위치를 발행한다.
+`Go To Target`은 현재 위치에서 입력한 절대좌표까지 pose 오차를
+폐루프 제어하며, `Return Home`은 실제 현재 위치에서 원점 `(0, 0)`까지
+주행한다. GUI 좌표를 강제로 변경하는 순간이동 처리는 사용하지 않는다.
+
+Action 목표 도달 후 Vehicle Manager의 미션을 완료 처리하여 차량을
+정지 상태로 유지한다.
+
+Diagnostics 서비스 확인:
+
+```bash
+ros2 service call /ecu/diagnostics/get_fault_info \
+  sdv_interfaces/srv/GetFaultInfo '{}'
+ros2 service call /ecu/diagnostics/clear_fault \
+  sdv_interfaces/srv/ClearFault "{fault_name: all}"
+```
+
+Action 서버 확인:
+
+```bash
+ros2 action send_goal /go_to_target \
+  sdv_interfaces/action/GoToTarget "{x: 1.0, y: 0.0}" --feedback
+ros2 action send_goal /return_home \
+  sdv_interfaces/action/ReturnHome "{start: true}" --feedback
+```
+
+위 Action은 Test GUI에서도 동일하게 실행할 수 있으며 CLI 명령은
+GUI가 없는 환경의 확인 용도로 사용할 수 있다.
 
 ---
 

@@ -1,14 +1,19 @@
 from enum import IntEnum
 
 import rclpy
+from rclpy.action import ActionClient
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 
+from sdv_interfaces.action import ReturnHome
 from sdv_interfaces.msg import BatteryStatus
 from sdv_interfaces.msg import DiagnosticEvent
 from sdv_interfaces.msg import Heartbeat
 from sdv_interfaces.msg import ObstacleInfo
 from sdv_interfaces.msg import SecurityEvent
 from sdv_interfaces.msg import VehicleState
+from sdv_interfaces.srv import CompleteMission
+from sdv_interfaces.srv import ResetEmergency
 from sdv_interfaces.srv import StartMission
 
 
@@ -35,6 +40,7 @@ class VehicleState_e(IntEnum):
     LOW_BATTERY = 3
     FAULT = 4
     EMERGENCY = 5
+    MRM = 6
 
 
 class VehicleManagerNode(Node):
@@ -46,12 +52,19 @@ class VehicleManagerNode(Node):
         self.state = VehicleState_e.INIT
         self.received_initial_battery_status = False
         self.mission_active = False
-        self.mission_duration_sec = 5.0
+        self.declare_parameter('mission_duration_sec', 12.0)
+        self.mission_duration_sec = float(
+            self.get_parameter('mission_duration_sec').value
+        )
         self.mission_started_ns = None
         self.low_battery_recovery_started_ns = None
         self.obstacle_detected = False
         self.obstacle_stop_active = False
+        self.obstacle_pause_started_ns = None
         self.resume_after_obstacle_clear = False
+        self.mrm_return_goal_active = False
+        self.mrm_return_retry_count = 0
+        self.mrm_return_retry_timer = None
 
         self.ecu_health = {
             'battery_ecu': {
@@ -148,6 +161,24 @@ class VehicleManagerNode(Node):
             '/ecu/vehicle/start_mission',
             self.start_mission_callback
         )
+
+        self.reset_emergency_service = self.create_service(
+            ResetEmergency,
+            '/ecu/vehicle/reset_emergency',
+            self.reset_emergency_callback
+        )
+
+        self.complete_mission_service = self.create_service(
+            CompleteMission,
+            '/ecu/vehicle/complete_mission',
+            self.complete_mission_callback
+        )
+
+        self.return_home_client = ActionClient(
+            self,
+            ReturnHome,
+            '/return_home'
+        )
         # =============================
 
         # =============================
@@ -174,7 +205,7 @@ class VehicleManagerNode(Node):
                 self.state == VehicleState_e.MISSION or
                 self.state == VehicleState_e.READY
             ):
-                self.change_state(VehicleState_e.LOW_BATTERY)
+                self.start_low_battery_mrm()
             self.low_battery_recovery_started_ns = None
         elif self.state == VehicleState_e.LOW_BATTERY:
             self.update_low_battery_recovery(msg.soc)
@@ -266,8 +297,60 @@ class VehicleManagerNode(Node):
             response.message = 'Low battery mission started in limp mode'
             return response
 
+        if self.state == VehicleState_e.MRM:
+            response.success = False
+            response.message = 'Cannot start mission during automatic MRM'
+            return response
+
         response.success = False
         response.message = f'Cannot start mission from {self.state.name}'
+        return response
+
+    def reset_emergency_callback(self, request, response):
+        del request
+
+        if self.state != VehicleState_e.EMERGENCY:
+            response.success = False
+            response.message = (
+                f'Reset is only allowed from EMERGENCY, current={self.state.name}'
+            )
+            return response
+
+        self.obstacle_detected = False
+        self.obstacle_stop_active = False
+        self.received_initial_battery_status = False
+        for health in self.ecu_health.values():
+            health['last_seen_ns'] = None
+            health['alive'] = False
+
+        self.change_state(VehicleState_e.INIT)
+        response.success = True
+        response.message = 'Emergency reset completed; reinitializing system'
+        return response
+
+    def complete_mission_callback(self, request, response):
+        del request
+
+        if self.state not in (
+            VehicleState_e.MISSION,
+            VehicleState_e.LOW_BATTERY,
+            VehicleState_e.MRM,
+        ):
+            response.success = False
+            response.message = f'No active mission in {self.state.name}'
+            return response
+
+        self.mission_started_ns = None
+        self.mission_active = False
+        if self.state == VehicleState_e.MISSION:
+            self.change_state(VehicleState_e.READY)
+        elif self.state == VehicleState_e.MRM:
+            self.change_state(VehicleState_e.LOW_BATTERY)
+        else:
+            self.publish_vehicle_state()
+
+        response.success = True
+        response.message = 'Mission completed'
         return response
 
     def fault_callback(self, msg):
@@ -332,6 +415,8 @@ class VehicleManagerNode(Node):
                 self.mission_started_ns = None
                 self.mission_active = False
             self.check_low_battery_recovery()
+        elif self.state == VehicleState_e.MRM:
+            pass
 
         self.publish_vehicle_state()
 # =============================
@@ -375,6 +460,83 @@ class VehicleManagerNode(Node):
 
         self.state = new_state
         self.publish_vehicle_state()
+
+    def start_low_battery_mrm(self):
+        if self.state in (
+            VehicleState_e.FAULT,
+            VehicleState_e.EMERGENCY,
+            VehicleState_e.MRM,
+        ):
+            return
+
+        self.mission_started_ns = None
+        self.mission_active = True
+        self.mrm_return_retry_count = 0
+        self.change_state(VehicleState_e.MRM)
+        self.send_return_home_goal()
+
+    def send_return_home_goal(self):
+        if self.mrm_return_goal_active:
+            return
+
+        if not self.return_home_client.server_is_ready():
+            self.get_logger().error(
+                'MRM failed: Return Home action server is unavailable'
+            )
+            self.change_state(VehicleState_e.EMERGENCY)
+            return
+
+        goal = ReturnHome.Goal()
+        goal.start = True
+        self.mrm_return_goal_active = True
+        future = self.return_home_client.send_goal_async(goal)
+        future.add_done_callback(self.return_home_goal_response_callback)
+
+    def return_home_goal_response_callback(self, future):
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self.mrm_return_goal_active = False
+            self.schedule_return_home_retry()
+            return
+
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(self.return_home_result_callback)
+
+    def return_home_result_callback(self, future):
+        self.mrm_return_goal_active = False
+        result = future.result().result
+        if result.success:
+            return
+
+        if self.state != VehicleState_e.MRM:
+            return
+
+        self.get_logger().error('MRM Return Home action failed')
+        self.change_state(VehicleState_e.EMERGENCY)
+
+    def schedule_return_home_retry(self):
+        self.mrm_return_retry_count += 1
+        if self.mrm_return_retry_count > 10:
+            self.get_logger().error(
+                'MRM failed: Return Home goal remained unavailable'
+            )
+            self.change_state(VehicleState_e.EMERGENCY)
+            return
+
+        if self.mrm_return_retry_timer is not None:
+            return
+
+        self.mrm_return_retry_timer = self.create_timer(
+            0.2,
+            self.retry_return_home_once
+        )
+
+    def retry_return_home_once(self):
+        self.mrm_return_retry_timer.cancel()
+        self.destroy_timer(self.mrm_return_retry_timer)
+        self.mrm_return_retry_timer = None
+        if self.state == VehicleState_e.MRM:
+            self.send_return_home_goal()
 
     def is_system_ready(self):
         return (
@@ -459,10 +621,12 @@ class VehicleManagerNode(Node):
             return
 
         self.obstacle_stop_active = True
+        self.obstacle_pause_started_ns = self.get_clock().now().nanoseconds
         self.resume_after_obstacle_clear = (
             self.state in (
                 VehicleState_e.MISSION,
                 VehicleState_e.LOW_BATTERY,
+                VehicleState_e.MRM,
             )
         )
 
@@ -484,11 +648,22 @@ class VehicleManagerNode(Node):
         self.obstacle_stop_active = False
 
         if self.resume_after_obstacle_clear:
+            if (
+                self.mission_started_ns is not None and
+                self.obstacle_pause_started_ns is not None
+            ):
+                pause_duration_ns = (
+                    self.get_clock().now().nanoseconds -
+                    self.obstacle_pause_started_ns
+                )
+                self.mission_started_ns += pause_duration_ns
+
             self.mission_active = True
             if self.mission_started_ns is None:
                 self.mission_started_ns = self.get_clock().now().nanoseconds
             self.publish_vehicle_state()
 
+        self.obstacle_pause_started_ns = None
         self.resume_after_obstacle_clear = False
 
         if DEBUG_VEHICLE_MANAGER and was_stop_active:
@@ -501,9 +676,14 @@ def main(args=None):
 
     node = VehicleManagerNode()
 
-    rclpy.spin(node)
+    try:
+        rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
+
     node.destroy_node()
-    rclpy.shutdown()
+    if rclpy.ok():
+        rclpy.shutdown()
 
 
 if __name__ == '__main__':

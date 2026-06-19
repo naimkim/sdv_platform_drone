@@ -1,11 +1,10 @@
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 
 from sdv_interfaces.msg import BatteryStatus
 from sdv_interfaces.msg import Heartbeat
 from sdv_interfaces.msg import VehicleState
-
-from datetime import datetime
 
 # Node Config VARs
 DEBUG_BATTERY_ECU = False
@@ -16,16 +15,25 @@ TASK_USE_10MS = False
 TASK_USE_100MS = True
 TASK_USE_1000MS = True
 
+
 class BatteryNode(Node):
-    
+
     def __init__(self):
         super().__init__('battery_ecu')
 
         # =============================
         # Members
-        self.soc = 100.0
-        self.voltage = 48.0
-        self.current = 5.0
+        self.declare_parameter('initial_soc', 100.0)
+        self.declare_parameter('discharge_per_sec', 0.1)
+        self.declare_parameter('voltage', 48.0)
+        self.declare_parameter('current', 5.0)
+
+        self.soc = float(self.get_parameter('initial_soc').value)
+        self.discharge_per_sec = float(
+            self.get_parameter('discharge_per_sec').value
+        )
+        self.voltage = float(self.get_parameter('voltage').value)
+        self.current = float(self.get_parameter('current').value)
         if DEBUG_TASK:
             self.cnt_1ms = 0
             self.cnt_10ms = 0
@@ -67,11 +75,11 @@ class BatteryNode(Node):
             self.timer_1000ms = self.create_timer(1.0, self.Task_1000ms)
         # =============================
 
-        if DEBUG_BATTERY_ECU :
+        if DEBUG_BATTERY_ECU:
             self.get_logger().info('Battery ECU Started')
 
 # ===================
-# CallBacks            
+# CallBacks
     def vehicle_status_callback(self, msg):
         if DEBUG_VEHICLE_STATE_MSG:
             self.get_logger().info(
@@ -85,14 +93,17 @@ class BatteryNode(Node):
         if DEBUG_TASK:
             self.cnt_1ms += 1
             self.get_logger().info(f'Task_1ms , executed {self.cnt_1ms}')
+
     def Task_10ms(self):
         if DEBUG_TASK:
             self.cnt_10ms += 1
             self.get_logger().info(f'Task_10ms , executed {self.cnt_10ms}')
+
     def Task_100ms(self):
         if DEBUG_TASK:
             self.cnt_100ms += 1
             self.get_logger().info(f'Task_100ms , executed {self.cnt_100ms}')
+
     def Task_1000ms(self):
         if DEBUG_TASK:
             self.cnt_1000ms += 1
@@ -100,7 +111,7 @@ class BatteryNode(Node):
         hb_msg = Heartbeat()
         bs_msg = BatteryStatus()
 
-        hb_msg.ecu_name = "battery_ecu"
+        hb_msg.ecu_name = 'battery_ecu'
         hb_msg.timestamp = self.get_clock().now().nanoseconds
 
         bs_msg.soc = self.soc
@@ -110,34 +121,40 @@ class BatteryNode(Node):
         self.heart_beat_publisher_.publish(hb_msg)
         self.battery_status_publisher_.publish(bs_msg)
 
-        if DEBUG_BATTERY_ECU :
+        if DEBUG_BATTERY_ECU:
             self.get_logger().info(
-                f'SOC={bs_msg.soc:.1f}%\nVOLTAGE={bs_msg.voltage:.1f}V\nCURRENT={bs_msg.current:.1f}A'
+                f'SOC={bs_msg.soc:.1f}%\n'
+                f'VOLTAGE={bs_msg.voltage:.1f}V\n'
+                f'CURRENT={bs_msg.current:.1f}A'
             )
             self.get_logger().info(
                 f'Node={hb_msg.ecu_name} , timestamp={hb_msg.timestamp}'
             )
 
-        self.soc -= 2.5
-        if self.soc < 0.0:
-            self.soc = 100.0
+        self.soc = max(0.0, self.soc - self.discharge_per_sec)
 
 # ===================
 
-# ===================    
+# ===================
 # Functions
 
-# ===================    
+# ===================
+
 
 def main(args=None):
     rclpy.init(args=args)
 
     node = BatteryNode()
 
-    rclpy.spin(node)
+    try:
+        rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
 
     node.destroy_node()
-    rclpy.shutdown()
+    if rclpy.ok():
+        rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()

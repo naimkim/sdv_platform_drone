@@ -1,12 +1,15 @@
 from enum import IntEnum
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 
 from sdv_interfaces.msg import BatteryStatus
 from sdv_interfaces.msg import DiagnosticEvent
 from sdv_interfaces.msg import Heartbeat
 from sdv_interfaces.msg import VehicleState
+from sdv_interfaces.srv import ClearFault
+from sdv_interfaces.srv import GetFaultInfo
 
 # Node Config VARs
 DEBUG = True
@@ -34,43 +37,44 @@ class DiagnosticsNode(Node):
         self.event_cooldown_sec = 3.0
         self.last_event_publish_ns = {}
         self.last_vehicle_state = None
+        self.active_faults = {}
 
         self.ecu_health = {
-            "vehicle_manager": {
-                "required": True,
-                "timeout_sec": 3.0,
-                "last_seen_ns": None,
-                "alive": False,
+            'vehicle_manager': {
+                'required': True,
+                'timeout_sec': 3.0,
+                'last_seen_ns': None,
+                'alive': False,
             },
-            "battery_ecu": {
-                "required": True,
-                "timeout_sec": 3.0,
-                "last_seen_ns": None,
-                "alive": False,
+            'battery_ecu': {
+                'required': True,
+                'timeout_sec': 3.0,
+                'last_seen_ns': None,
+                'alive': False,
             },
-            "sensor_ecu": {
-                "required": True,
-                "timeout_sec": 3.0,
-                "last_seen_ns": None,
-                "alive": False,
+            'sensor_ecu': {
+                'required': True,
+                'timeout_sec': 3.0,
+                'last_seen_ns': None,
+                'alive': False,
             },
-            "motor_ecu": {
-                "required": True,
-                "timeout_sec": 3.0,
-                "last_seen_ns": None,
-                "alive": False,
+            'motor_ecu': {
+                'required': True,
+                'timeout_sec': 3.0,
+                'last_seen_ns': None,
+                'alive': False,
             },
-            "diagnostics_ecu": {
-                "required": False,
-                "timeout_sec": 5.0,
-                "last_seen_ns": None,
-                "alive": False,
+            'diagnostics_ecu': {
+                'required': False,
+                'timeout_sec': 5.0,
+                'last_seen_ns': None,
+                'alive': False,
             },
-            "security_ecu": {
-                "required": False,
-                "timeout_sec": 5.0,
-                "last_seen_ns": None,
-                "alive": False,
+            'security_ecu': {
+                'required': False,
+                'timeout_sec': 5.0,
+                'last_seen_ns': None,
+                'alive': False,
             },
         }
         # =============================
@@ -108,6 +112,18 @@ class DiagnosticsNode(Node):
             '/ecu/vehicle/status',
             self.vehicle_state_callback,
             10
+        )
+
+        self.get_fault_info_service = self.create_service(
+            GetFaultInfo,
+            '/ecu/diagnostics/get_fault_info',
+            self.get_fault_info_callback
+        )
+
+        self.clear_fault_service = self.create_service(
+            ClearFault,
+            '/ecu/diagnostics/clear_fault',
+            self.clear_fault_callback
         )
         # =============================
 
@@ -149,10 +165,10 @@ class DiagnosticsNode(Node):
             )
             return
 
-        self.ecu_health[ecu_name]["last_seen_ns"] = (
+        self.ecu_health[ecu_name]['last_seen_ns'] = (
             self.get_clock().now().nanoseconds
         )
-        self.ecu_health[ecu_name]["alive"] = True
+        self.ecu_health[ecu_name]['alive'] = True
 
     def vehicle_state_callback(self, msg):
         if self.last_vehicle_state == msg.state:
@@ -172,6 +188,25 @@ class DiagnosticsNode(Node):
                 DiagnosticSeverity_e.CRITICAL,
                 'Vehicle state changed to EMERGENCY'
             )
+
+    def get_fault_info_callback(self, request, response):
+        del request
+        response.has_fault = bool(self.active_faults)
+        response.description = '; '.join(
+            f'{name}: {description}'
+            for name, description in sorted(self.active_faults.items())
+        )
+        return response
+
+    def clear_fault_callback(self, request, response):
+        fault_name = request.fault_name.strip()
+        if not fault_name or fault_name == 'all':
+            self.active_faults.clear()
+            response.success = True
+            return response
+
+        response.success = self.active_faults.pop(fault_name, None) is not None
+        return response
 # =================== End of CALLBACKs
 
 # ===================
@@ -203,6 +238,8 @@ class DiagnosticsNode(Node):
 
         self.diagnostic_event_pub.publish(msg)
         self.last_event_publish_ns[event_key] = self.get_clock().now().nanoseconds
+        if int(severity) >= int(DiagnosticSeverity_e.ERROR):
+            self.active_faults[ecu_name] = description
 
         if DEBUG:
             self.get_logger().warn(
@@ -224,10 +261,10 @@ class DiagnosticsNode(Node):
         now_ns = self.get_clock().now().nanoseconds
 
         for ecu_name, health in self.ecu_health.items():
-            last_seen_ns = health["last_seen_ns"]
+            last_seen_ns = health['last_seen_ns']
 
             if last_seen_ns is None:
-                if health["required"]:
+                if health['required']:
                     self.publish_diagnostic_event(
                         ecu_name,
                         DiagnosticSeverity_e.WARN,
@@ -237,10 +274,13 @@ class DiagnosticsNode(Node):
 
             elapsed_sec = (now_ns - last_seen_ns) / 1_000_000_000.0
 
-            if elapsed_sec > health["timeout_sec"]:
-                health["alive"] = False
+            if elapsed_sec > health['timeout_sec']:
+                if not health['alive']:
+                    continue
 
-                if health["required"]:
+                health['alive'] = False
+
+                if health['required']:
                     self.publish_diagnostic_event(
                         ecu_name,
                         DiagnosticSeverity_e.ERROR,
@@ -261,10 +301,14 @@ def main(args=None):
 
     node = DiagnosticsNode()
 
-    rclpy.spin(node)
+    try:
+        rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
 
     node.destroy_node()
-    rclpy.shutdown()
+    if rclpy.ok():
+        rclpy.shutdown()
 
 
 if __name__ == '__main__':

@@ -33,11 +33,14 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ObstacleInfo.msg"
   "msg/SecurityEvent.msg"
   "msg/VehicleState.msg"
+  "msg/VehiclePose.msg"
 
   "srv/GetFaultInfo.srv"
   "srv/ClearFault.srv"
   "srv/CalibrateSensor.srv"
   "srv/StartMission.srv"
+  "srv/ResetEmergency.srv"
+  "srv/CompleteMission.srv"
 
   "action/GoToTarget.action"
   "action/ReturnHome.action"

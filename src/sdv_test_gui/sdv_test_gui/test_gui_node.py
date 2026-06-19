@@ -26,16 +26,21 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 import rclpy
+from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 
+from sdv_interfaces.action import GoToTarget
+from sdv_interfaces.action import ReturnHome
 from sdv_interfaces.msg import BatteryStatus
 from sdv_interfaces.msg import DiagnosticEvent
 from sdv_interfaces.msg import Heartbeat
 from sdv_interfaces.msg import MotorStatus
 from sdv_interfaces.msg import ObstacleInfo
 from sdv_interfaces.msg import SecurityEvent
+from sdv_interfaces.msg import VehiclePose
 from sdv_interfaces.msg import VehicleState
+from sdv_interfaces.srv import ResetEmergency
 from sdv_interfaces.srv import StartMission
 
 MAIN_WINDOW_WIDTH = 1100
@@ -60,6 +65,7 @@ VEHICLE_STATE_NAMES = {
     VehicleState.LOW_BATTERY: 'LOW_BATTERY',
     VehicleState.FAULT: 'FAULT',
     VehicleState.EMERGENCY: 'EMERGENCY',
+    VehicleState.MRM: 'MRM',
 }
 
 DIAGNOSTIC_SEVERITY_NAMES = {
@@ -76,6 +82,7 @@ STATE_COLORS = {
     VehicleState.LOW_BATTERY: QColor(186, 126, 18),
     VehicleState.FAULT: QColor(184, 54, 54),
     VehicleState.EMERGENCY: QColor(150, 28, 28),
+    VehicleState.MRM: QColor(112, 74, 168),
 }
 
 
@@ -85,10 +92,13 @@ class GuiSignals(QObject):
     battery_status_received = pyqtSignal(float, float, float)
     obstacle_info_received = pyqtSignal(bool, float, float)
     motor_status_received = pyqtSignal(float, float, float, float, bool)
+    vehicle_pose_received = pyqtSignal(float, float, float)
     heartbeat_received = pyqtSignal(str, str, float)
     diagnostic_event_received = pyqtSignal(str, int, str, str)
     security_event_received = pyqtSignal(str, int, str, str)
     service_result_received = pyqtSignal(str, bool, str)
+    action_feedback_received = pyqtSignal(str, float)
+    action_result_received = pyqtSignal(str, bool, str)
 
 
 class SdvTestGuiRosNode(Node):
@@ -113,6 +123,23 @@ class SdvTestGuiRosNode(Node):
         self.start_mission_client = self.create_client(
             StartMission,
             '/ecu/vehicle/start_mission'
+        )
+
+        self.reset_emergency_client = self.create_client(
+            ResetEmergency,
+            '/ecu/vehicle/reset_emergency'
+        )
+
+        self.go_to_target_client = ActionClient(
+            self,
+            GoToTarget,
+            '/go_to_target'
+        )
+
+        self.return_home_client = ActionClient(
+            self,
+            ReturnHome,
+            '/return_home'
         )
 
         self.vehicle_state_sub = self.create_subscription(
@@ -147,6 +174,13 @@ class SdvTestGuiRosNode(Node):
             MotorStatus,
             '/ecu/motor/status',
             self.motor_status_callback,
+            10
+        )
+
+        self.vehicle_pose_sub = self.create_subscription(
+            VehiclePose,
+            '/ecu/vehicle/pose',
+            self.vehicle_pose_callback,
             10
         )
 
@@ -203,6 +237,13 @@ class SdvTestGuiRosNode(Node):
             float(msg.target_angular),
             float(msg.current_angular),
             bool(msg.enabled)
+        )
+
+    def vehicle_pose_callback(self, msg):
+        self.gui_signals.vehicle_pose_received.emit(
+            float(msg.x),
+            float(msg.y),
+            float(msg.yaw)
         )
 
     def diagnostic_event_callback(self, msg):
@@ -266,6 +307,176 @@ class SdvTestGuiRosNode(Node):
                 str(exc)
             )
 
+    def request_reset_emergency(self):
+        if not self.reset_emergency_client.service_is_ready():
+            self.gui_signals.service_result_received.emit(
+                'Reset Emergency',
+                False,
+                'Service not available'
+            )
+            return
+
+        request = ResetEmergency.Request()
+        future = self.reset_emergency_client.call_async(request)
+        future.add_done_callback(self.reset_emergency_response_callback)
+
+    def reset_emergency_response_callback(self, future):
+        try:
+            response = future.result()
+            self.gui_signals.service_result_received.emit(
+                'Reset Emergency',
+                bool(response.success),
+                response.message
+            )
+        except Exception as exc:
+            self.gui_signals.service_result_received.emit(
+                'Reset Emergency',
+                False,
+                str(exc)
+            )
+
+    def request_go_to_target(self, x, y):
+        if not self.go_to_target_client.server_is_ready():
+            self.gui_signals.action_result_received.emit(
+                'Go To Target',
+                False,
+                'Action server not available'
+            )
+            return
+
+        goal = GoToTarget.Goal()
+        goal.x = float(x)
+        goal.y = float(y)
+        future = self.go_to_target_client.send_goal_async(
+            goal,
+            feedback_callback=self.go_to_target_feedback_callback
+        )
+        future.add_done_callback(self.go_to_target_goal_response_callback)
+
+    def request_go_to_target_with_mission(self, x, y):
+        self.request_start_mission_then(
+            'Go To Target',
+            lambda: self.request_go_to_target(x, y)
+        )
+
+    def go_to_target_feedback_callback(self, feedback_msg):
+        self.gui_signals.action_feedback_received.emit(
+            'Go To Target',
+            float(feedback_msg.feedback.progress)
+        )
+
+    def go_to_target_goal_response_callback(self, future):
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self.gui_signals.action_result_received.emit(
+                'Go To Target',
+                False,
+                'Goal rejected; start an active mission first'
+            )
+            return
+
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(self.go_to_target_result_callback)
+
+    def go_to_target_result_callback(self, future):
+        result = future.result().result
+        self.gui_signals.action_result_received.emit(
+            'Go To Target',
+            bool(result.success),
+            'Goal completed' if result.success else 'Goal failed'
+        )
+
+    def request_return_home(self):
+        if not self.return_home_client.server_is_ready():
+            self.gui_signals.action_result_received.emit(
+                'Return Home',
+                False,
+                'Action server not available'
+            )
+            return
+
+        goal = ReturnHome.Goal()
+        goal.start = True
+        future = self.return_home_client.send_goal_async(
+            goal,
+            feedback_callback=self.return_home_feedback_callback
+        )
+        future.add_done_callback(self.return_home_goal_response_callback)
+
+    def request_return_home_with_mission(self):
+        self.request_start_mission_then(
+            'Return Home',
+            self.request_return_home
+        )
+
+    def request_start_mission_then(self, action_name, continuation):
+        if not self.start_mission_client.service_is_ready():
+            self.gui_signals.action_result_received.emit(
+                action_name,
+                False,
+                'Start Mission service not available'
+            )
+            return
+
+        future = self.start_mission_client.call_async(StartMission.Request())
+        future.add_done_callback(
+            lambda result: self.start_mission_for_action_callback(
+                result,
+                action_name,
+                continuation
+            )
+        )
+
+    def start_mission_for_action_callback(
+        self,
+        future,
+        action_name,
+        continuation
+    ):
+        try:
+            response = future.result()
+            if not response.success:
+                self.gui_signals.action_result_received.emit(
+                    action_name,
+                    False,
+                    response.message
+                )
+                return
+            continuation()
+        except Exception as exc:
+            self.gui_signals.action_result_received.emit(
+                action_name,
+                False,
+                str(exc)
+            )
+
+    def return_home_feedback_callback(self, feedback_msg):
+        self.gui_signals.action_feedback_received.emit(
+            'Return Home',
+            float(feedback_msg.feedback.progress)
+        )
+
+    def return_home_goal_response_callback(self, future):
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self.gui_signals.action_result_received.emit(
+                'Return Home',
+                False,
+                'Goal rejected; start an active mission first'
+            )
+            return
+
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(self.return_home_result_callback)
+
+    def return_home_result_callback(self, future):
+        result = future.result().result
+        self.gui_signals.action_result_received.emit(
+            'Return Home',
+            bool(result.success),
+            'Home reached' if result.success else 'Return failed'
+        )
+
 
 class SimulationView(QWidget):
 
@@ -276,8 +487,10 @@ class SimulationView(QWidget):
 
         self.x_m = 0.0
         self.y_m = 0.0
-        self.yaw_rad = -math.pi / 2.0
+        self.yaw_rad = 0.0
         self.path_points = []
+        self.target_x_m = None
+        self.target_y_m = None
 
         self.current_linear = 0.0
         self.current_angular = 0.0
@@ -323,32 +536,35 @@ class SimulationView(QWidget):
         self.current_angular = current_angular
         self.motor_enabled = enabled
 
+    def set_pose(self, x_m, y_m, yaw_rad):
+        if distance_2d(self.x_m, self.y_m, x_m, y_m) > 0.03:
+            self.path_points.append((x_m, y_m))
+            self.path_points = self.path_points[-120:]
+
+        self.x_m = x_m
+        self.y_m = y_m
+        self.yaw_rad = yaw_rad
+        self.update()
+
     def reset_pose(self):
         self.x_m = 0.0
         self.y_m = 0.0
-        self.yaw_rad = -math.pi / 2.0
+        self.yaw_rad = 0.0
         self.path_points.clear()
+        self.clear_target()
+        self.update()
+
+    def set_target(self, x_m, y_m):
+        self.target_x_m = float(x_m)
+        self.target_y_m = float(y_m)
+        self.update()
+
+    def clear_target(self):
+        self.target_x_m = None
+        self.target_y_m = None
         self.update()
 
     def step_simulation(self):
-        now = time.monotonic()
-        dt_sec = min(0.2, now - self.last_update_monotonic)
-        self.last_update_monotonic = now
-
-        if self.motor_enabled:
-            self.yaw_rad += self.current_angular * dt_sec
-            self.x_m += self.current_linear * math.cos(self.yaw_rad) * dt_sec
-            self.y_m += self.current_linear * math.sin(self.yaw_rad) * dt_sec
-
-            if not self.path_points or distance_2d(
-                self.path_points[-1][0],
-                self.path_points[-1][1],
-                self.x_m,
-                self.y_m
-            ) > 0.05:
-                self.path_points.append((self.x_m, self.y_m))
-                self.path_points = self.path_points[-120:]
-
         self.update()
 
     def paintEvent(self, event):
@@ -373,6 +589,7 @@ class SimulationView(QWidget):
 
         self.draw_grid(painter, world_rect, vehicle_screen_center, scale)
         self.draw_path(painter, to_screen)
+        self.draw_target(painter, to_screen)
         self.draw_sensor(painter, to_screen, scale)
         self.draw_vehicle(painter, to_screen)
         self.draw_obstacle(painter, to_screen)
@@ -419,6 +636,23 @@ class SimulationView(QWidget):
             prev = self.path_points[index - 1]
             current = self.path_points[index]
             painter.drawLine(to_screen(prev[0], prev[1]), to_screen(current[0], current[1]))
+
+    def draw_target(self, painter, to_screen):
+        if self.target_x_m is None or self.target_y_m is None:
+            return
+
+        target = to_screen(self.target_x_m, self.target_y_m)
+        painter.setPen(QPen(QColor(135, 66, 180), 3))
+        painter.setBrush(QColor(220, 190, 240))
+        painter.drawEllipse(target, 9, 9)
+        painter.drawLine(
+            QPointF(target.x() - 14, target.y()),
+            QPointF(target.x() + 14, target.y())
+        )
+        painter.drawLine(
+            QPointF(target.x(), target.y() - 14),
+            QPointF(target.x(), target.y() + 14)
+        )
 
     def draw_sensor(self, painter, to_screen, scale):
         origin = to_screen(self.x_m, self.y_m)
@@ -708,6 +942,8 @@ class MainWindow(QMainWindow):
         self.ros_node = ros_node
         self.gui_signals = gui_signals
         self.last_heartbeat_times = {}
+        self.current_vehicle_state = VehicleState.INIT
+        self.current_mission_active = False
 
         self.setWindowTitle('SDV Test GUI')
         self.resize(MAIN_WINDOW_WIDTH, MAIN_WINDOW_HEIGHT)
@@ -753,6 +989,8 @@ class MainWindow(QMainWindow):
         self.motor_current_angular_label = QLabel('-')
 
         self.service_result_label = QLabel('-')
+        self.action_progress_label = QLabel('-')
+        self.action_result_label = QLabel('-')
         self.security_status_label = QLabel('NORMAL')
         self.security_status_label.setStyleSheet(
             'font-size: 18px; font-weight: 600; color: #247a45;'
@@ -838,6 +1076,21 @@ class MainWindow(QMainWindow):
 
         self.publish_battery_button = QPushButton('Publish Battery')
         self.start_mission_button = QPushButton('Start Mission')
+        self.reset_emergency_button = QPushButton('Reset Emergency → INIT')
+        self.target_x_spin = QDoubleSpinBox()
+        self.target_x_spin.setRange(-100.0, 100.0)
+        self.target_x_spin.setDecimals(2)
+        self.target_x_spin.setValue(1.0)
+        self.target_x_spin.setSuffix(' m')
+
+        self.target_y_spin = QDoubleSpinBox()
+        self.target_y_spin.setRange(-100.0, 100.0)
+        self.target_y_spin.setDecimals(2)
+        self.target_y_spin.setValue(0.0)
+        self.target_y_spin.setSuffix(' m')
+
+        self.go_to_target_button = QPushButton('Go To Target')
+        self.return_home_button = QPushButton('Return Home')
 
         self.heartbeat_checks = {}
         for ecu_name in ECU_NAMES:
@@ -851,6 +1104,7 @@ class MainWindow(QMainWindow):
         self.gui_signals.battery_status_received.connect(self.update_battery_status)
         self.gui_signals.obstacle_info_received.connect(self.update_obstacle_info)
         self.gui_signals.motor_status_received.connect(self.update_motor_status)
+        self.gui_signals.vehicle_pose_received.connect(self.update_vehicle_pose)
         self.gui_signals.heartbeat_received.connect(self.update_heartbeat_status)
         self.gui_signals.diagnostic_event_received.connect(
             self.add_diagnostic_event
@@ -859,10 +1113,21 @@ class MainWindow(QMainWindow):
             self.add_security_event
         )
         self.gui_signals.service_result_received.connect(self.update_service_result)
+        self.gui_signals.action_feedback_received.connect(
+            self.update_action_feedback
+        )
+        self.gui_signals.action_result_received.connect(
+            self.update_action_result
+        )
 
         self.soc_slider.valueChanged.connect(self.update_soc_label)
         self.publish_battery_button.clicked.connect(self.publish_battery)
         self.start_mission_button.clicked.connect(self.request_start_mission)
+        self.reset_emergency_button.clicked.connect(
+            self.request_reset_emergency
+        )
+        self.go_to_target_button.clicked.connect(self.request_go_to_target)
+        self.return_home_button.clicked.connect(self.request_return_home)
 
     def build_layout(self):
         root = QWidget()
@@ -880,6 +1145,7 @@ class MainWindow(QMainWindow):
         simulator_panel = QWidget()
         simulator_layout = QVBoxLayout(simulator_panel)
         simulator_layout.addWidget(self.build_vehicle_command_group())
+        simulator_layout.addWidget(self.build_action_command_group())
         simulator_layout.addWidget(self.build_battery_simulator_group())
         simulator_layout.addWidget(self.build_heartbeat_simulator_group())
         simulator_layout.addStretch()
@@ -950,7 +1216,19 @@ class MainWindow(QMainWindow):
         group = QGroupBox('Vehicle Commands')
         layout = QVBoxLayout(group)
         layout.addWidget(self.start_mission_button)
+        layout.addWidget(self.reset_emergency_button)
         layout.addWidget(self.service_result_label)
+        return group
+
+    def build_action_command_group(self):
+        group = QGroupBox('Action Commands')
+        layout = QFormLayout(group)
+        layout.addRow('Target X', self.target_x_spin)
+        layout.addRow('Target Y', self.target_y_spin)
+        layout.addRow(self.go_to_target_button)
+        layout.addRow(self.return_home_button)
+        layout.addRow('Progress', self.action_progress_label)
+        layout.addRow('Result', self.action_result_label)
         return group
 
     def build_heartbeat_monitor_group(self):
@@ -1001,11 +1279,17 @@ class MainWindow(QMainWindow):
         self.node_list.addItems(node_names)
 
     def update_vehicle_state(self, state, mission_active):
+        self.current_vehicle_state = state
+        self.current_mission_active = mission_active
         state_name = VEHICLE_STATE_NAMES.get(state, f'UNKNOWN({state})')
         mission_text = 'ACTIVE' if mission_active else 'IDLE'
         self.state_label.setText(f'{state_name} / {mission_text}')
         self.simulation_view.set_vehicle_state(state, mission_active)
         self.dashboard_widget.set_vehicle_state(state, mission_active)
+        if state == VehicleState.MRM:
+            self.simulation_view.set_target(0.0, 0.0)
+        elif state == VehicleState.LOW_BATTERY and not mission_active:
+            self.simulation_view.clear_target()
 
     def update_battery_status(self, soc, voltage, current):
         self.battery_soc_label.setText(f'{soc:.1f} %')
@@ -1045,6 +1329,9 @@ class MainWindow(QMainWindow):
             current_angular,
             enabled
         )
+
+    def update_vehicle_pose(self, x_m, y_m, yaw_rad):
+        self.simulation_view.set_pose(x_m, y_m, yaw_rad)
 
     def update_heartbeat_status(self, ecu_name, timestamp_text, received_monotonic):
         if ecu_name not in self.heartbeat_rows:
@@ -1160,10 +1447,84 @@ class MainWindow(QMainWindow):
         self.service_result_label.setText('Start Mission: requesting...')
         self.ros_node.request_start_mission()
 
+    def request_reset_emergency(self):
+        self.service_result_label.setText('Reset Emergency: requesting...')
+        self.ros_node.request_reset_emergency()
+
     def update_service_result(self, command_name, success, message):
         status = 'OK' if success else 'FAIL'
         self.service_result_label.setText(
             f'{command_name}: {status} - {message}'
+        )
+
+    def request_go_to_target(self):
+        if not self.can_request_action():
+            self.action_result_label.setText(
+                'Go To Target: FAIL - Action unavailable in current state'
+            )
+            return
+
+        self.action_progress_label.setText('Go To Target: requesting...')
+        self.action_result_label.setText('-')
+        self.simulation_view.set_target(
+            self.target_x_spin.value(),
+            self.target_y_spin.value()
+        )
+        if self.should_start_mission_for_action():
+            self.ros_node.request_go_to_target_with_mission(
+                self.target_x_spin.value(),
+                self.target_y_spin.value()
+            )
+        else:
+            self.ros_node.request_go_to_target(
+                self.target_x_spin.value(),
+                self.target_y_spin.value()
+            )
+
+    def request_return_home(self):
+        if not self.can_request_action():
+            self.action_result_label.setText(
+                'Return Home: FAIL - Action unavailable in current state'
+            )
+            return
+
+        self.action_progress_label.setText('Return Home: requesting...')
+        self.action_result_label.setText('-')
+        self.simulation_view.set_target(0.0, 0.0)
+        if self.should_start_mission_for_action():
+            self.ros_node.request_return_home_with_mission()
+        else:
+            self.ros_node.request_return_home()
+
+    def update_action_feedback(self, action_name, progress):
+        self.action_progress_label.setText(
+            f'{action_name}: {progress:.0f}%'
+        )
+
+    def update_action_result(self, action_name, success, message):
+        status = 'OK' if success else 'FAIL'
+        self.action_result_label.setText(
+            f'{action_name}: {status} - {message}'
+        )
+        if not success:
+            self.simulation_view.clear_target()
+        elif action_name in ('Return Home', 'Go To Target'):
+            self.simulation_view.clear_target()
+
+    def can_request_action(self):
+        return self.current_vehicle_state in (
+            VehicleState.READY,
+            VehicleState.MISSION,
+            VehicleState.LOW_BATTERY,
+        )
+
+    def should_start_mission_for_action(self):
+        return (
+            self.current_vehicle_state == VehicleState.READY or
+            (
+                self.current_vehicle_state == VehicleState.LOW_BATTERY and
+                not self.current_mission_active
+            )
         )
 
     def publish_enabled_heartbeats(self):

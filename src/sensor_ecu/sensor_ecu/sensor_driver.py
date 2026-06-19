@@ -10,19 +10,27 @@ class SensorDriverBase:
     def calibrate(self):
         raise NotImplementedError
 
+    def set_mission_active(self, active):
+        return None
+
 
 class SimSensorDriver(SensorDriverBase):
 
     def __init__(self):
         self.start_time = time.monotonic()
         self.calibrated = True
+        self.mission_active = False
+        self.mission_started_at = None
 
     def read_obstacle(self):
         elapsed_sec = time.monotonic() - self.start_time
+        mission_elapsed = 0.0
+        if self.mission_started_at is not None:
+            mission_elapsed = time.monotonic() - self.mission_started_at
 
-        # Simulate an obstacle every 12 seconds for 4 seconds.
-        cycle_sec = elapsed_sec % 12.0
-        detected = cycle_sec >= 8.0
+        # During each mission, expose an obstacle after four seconds. This
+        # makes Demo #1 deterministic regardless of launch timing.
+        detected = self.mission_active and 4.0 <= mission_elapsed < 7.0
 
         if detected:
             distance = 0.4 + 0.2 * math.sin(elapsed_sec * 2.0)
@@ -41,6 +49,14 @@ class SimSensorDriver(SensorDriverBase):
         self.calibrated = True
         self.start_time = time.monotonic()
         return True
+
+    def set_mission_active(self, active):
+        active = bool(active)
+        if active and not self.mission_active:
+            self.mission_started_at = time.monotonic()
+        elif not active:
+            self.mission_started_at = None
+        self.mission_active = active
 
 
 class HwSensorDriver(SensorDriverBase):

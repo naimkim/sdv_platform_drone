@@ -1,4 +1,5 @@
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 
 from sdv_interfaces.msg import BatteryStatus
@@ -19,7 +20,6 @@ BATTERY_SOC_MAX = 100.0
 BATTERY_VOLTAGE_MIN = 0.0
 BATTERY_VOLTAGE_MAX = 80.0
 BATTERY_CURRENT_ABS_MAX = 500.0
-BATTERY_SOC_MAX_RATE_PER_SEC = 15.0
 BATTERY_ANOMALY_LOG_COOLDOWN_SEC = 3.0
 
 MOTOR_TARGET_LINEAR_ABS_MAX = 1.0
@@ -37,8 +37,6 @@ class SecurityNode(Node):
 
         self.last_battery_status = None
         self.last_battery_status_ns = None
-        self.last_checked_battery_status = None
-        self.last_checked_battery_status_ns = None
         self.last_battery_anomalies = []
         self.last_battery_anomaly_log_ns = {}
         self.last_motor_status = None
@@ -95,6 +93,7 @@ class SecurityNode(Node):
         now_ns = self.update_monitored_topic('/ecu/battery/status')
         self.last_battery_status = msg
         self.last_battery_status_ns = now_ns
+        self.check_battery_status(msg, now_ns)
 
         if DEBUG_MONITORED_TOPICS:
             self.get_logger().info(
@@ -106,6 +105,7 @@ class SecurityNode(Node):
         now_ns = self.update_monitored_topic('/ecu/motor/status')
         self.last_motor_status = msg
         self.last_motor_status_ns = now_ns
+        self.check_motor_status(msg, now_ns)
 
         if DEBUG_MONITORED_TOPICS:
             self.get_logger().info(
@@ -141,21 +141,21 @@ class SecurityNode(Node):
         if self.last_battery_status_ns is None:
             return
 
-        anomalies = self.detect_battery_anomalies(
+        self.check_battery_status(
             self.last_battery_status,
             self.last_battery_status_ns
         )
+
+    def check_battery_status(self, msg, msg_ns):
+        anomalies = self.detect_battery_anomalies(msg, msg_ns)
         self.last_battery_anomalies = anomalies
 
         for anomaly_key, description in anomalies:
             self.report_battery_anomaly(
                 anomaly_key,
                 description,
-                self.last_battery_status_ns
+                msg_ns
             )
-
-        self.last_checked_battery_status = self.last_battery_status
-        self.last_checked_battery_status_ns = self.last_battery_status_ns
 
     def detect_battery_anomalies(self, msg, msg_ns):
         anomalies = []
@@ -181,39 +181,7 @@ class SecurityNode(Node):
                 f'Invalid battery current: {msg.current:.1f}A'
             ))
 
-        if self.can_check_battery_soc_rate(msg, msg_ns):
-            elapsed_sec = (
-                msg_ns - self.last_checked_battery_status_ns
-            ) / 1_000_000_000.0
-            soc_delta = abs(msg.soc - self.last_checked_battery_status.soc)
-            soc_rate = soc_delta / elapsed_sec
-
-            if soc_rate > BATTERY_SOC_MAX_RATE_PER_SEC:
-                anomalies.append((
-                    'BATTERY_SOC_RATE',
-                    f'Battery SOC changed too fast: {soc_rate:.1f}%/s'
-                ))
-
         return anomalies
-
-    def can_check_battery_soc_rate(self, msg, msg_ns):
-        if self.last_checked_battery_status is None:
-            return False
-
-        if self.last_checked_battery_status_ns is None:
-            return False
-
-        elapsed_sec = (
-            msg_ns - self.last_checked_battery_status_ns
-        ) / 1_000_000_000.0
-        if elapsed_sec <= 0.0:
-            return False
-
-        return (
-            BATTERY_SOC_MIN <= msg.soc <= BATTERY_SOC_MAX and
-            BATTERY_SOC_MIN <= self.last_checked_battery_status.soc <=
-            BATTERY_SOC_MAX
-        )
 
     def report_battery_anomaly(self, anomaly_key, description, now_ns):
         last_log_ns = self.last_battery_anomaly_log_ns.get(anomaly_key)
@@ -238,14 +206,20 @@ class SecurityNode(Node):
         if self.last_motor_status_ns is None:
             return
 
-        anomalies = self.detect_motor_anomalies(self.last_motor_status)
+        self.check_motor_status(
+            self.last_motor_status,
+            self.last_motor_status_ns
+        )
+
+    def check_motor_status(self, msg, msg_ns):
+        anomalies = self.detect_motor_anomalies(msg)
         self.last_motor_anomalies = anomalies
 
         for anomaly_key, description in anomalies:
             self.report_motor_anomaly(
                 anomaly_key,
                 description,
-                self.last_motor_status_ns
+                msg_ns
             )
 
     def detect_motor_anomalies(self, msg):
@@ -282,13 +256,13 @@ class SecurityNode(Node):
         if (
             not msg.enabled and
             (
-                abs(msg.current_linear) > MOTOR_DISABLED_SPEED_EPSILON or
-                abs(msg.current_angular) > MOTOR_DISABLED_SPEED_EPSILON
+                abs(msg.target_linear) > MOTOR_DISABLED_SPEED_EPSILON or
+                abs(msg.target_angular) > MOTOR_DISABLED_SPEED_EPSILON
             )
         ):
             anomalies.append((
-                'MOTOR_DISABLED_WITH_SPEED',
-                'Motor reports speed while disabled'
+                'MOTOR_DISABLED_WITH_TARGET',
+                'Motor reports non-zero target while disabled'
             ))
 
         return anomalies
@@ -330,10 +304,14 @@ def main(args=None):
 
     node = SecurityNode()
 
-    rclpy.spin(node)
+    try:
+        rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
 
     node.destroy_node()
-    rclpy.shutdown()
+    if rclpy.ok():
+        rclpy.shutdown()
 
 
 if __name__ == '__main__':

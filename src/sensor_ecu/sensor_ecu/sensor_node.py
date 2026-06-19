@@ -1,4 +1,5 @@
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 
 from sdv_interfaces.msg import Heartbeat
@@ -81,6 +82,14 @@ class SensorNode(Node):
 # CALLBACKs
     def vehicle_state_callback(self, msg):
         self.last_vehicle_state = msg.state
+        if msg.mission_active:
+            self.sensor_driver.set_mission_active(True)
+        elif msg.state not in (
+            VehicleState.MISSION,
+            VehicleState.LOW_BATTERY,
+            VehicleState.MRM,
+        ):
+            self.sensor_driver.set_mission_active(False)
 
         if DEBUG_VEHICLE_STATE_MSG:
             self.get_logger().info(
@@ -149,10 +158,14 @@ def main(args=None):
 
     node = SensorNode()
 
-    rclpy.spin(node)
+    try:
+        rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
 
     node.destroy_node()
-    rclpy.shutdown()
+    if rclpy.ok():
+        rclpy.shutdown()
 
 
 if __name__ == '__main__':

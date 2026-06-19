@@ -15,7 +15,7 @@ setup(
     zip_safe=True,
     maintainer='seokjunkang',
     maintainer_email='owljun2@gmail.com',
-    description='TODO: Package description',
+    description='Battery spoofing attack generator for SDV security demos',
     license='TODO: License declaration',
     extras_require={
         'test': [
@@ -24,6 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'attack_node = attack_node.attack_node:main',
         ],
     },
 )
