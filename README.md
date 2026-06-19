@@ -16,6 +16,51 @@ Motor는 Driver 계층을 분리하여 실제 H/W 제어 코드로 교체할 수
 
 ---
 
+## Demo
+
+### Goal-driven Mission
+
+![Go To Target mission in progress](docs/images/sdv-gui-mission.png)
+
+`GoToTarget` Action을 실행한 화면입니다. 차량 상태, 목표 위치, Pose,
+속도와 Action 진행률이 하나의 GUI에서 실시간으로 연동됩니다.
+
+<table>
+  <tr>
+    <td width="50%">
+      <img src="docs/images/sdv-gui-mrm.png" alt="Low battery MRM return home">
+    </td>
+    <td width="50%">
+      <img src="docs/images/sdv-gui-emergency.png" alt="Cyber attack emergency response">
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <strong>Low Battery MRM</strong><br>
+      <sub>SOC 15% 감지 → 기존 Goal 중단 → Return Home 자동 수행</sub>
+    </td>
+    <td align="center">
+      <strong>Cyber Attack Response</strong><br>
+      <sub>SOC 150% 탐지 → Security Event → EMERGENCY Stop</sub>
+    </td>
+  </tr>
+</table>
+
+시연은 정상 동작뿐 아니라 장애를 실제 Topic 데이터로 주입하고,
+`감지 → 상태 전이 → 제어 출력 변경`이 끝까지 연결되는지를 보여줍니다.
+
+<details>
+<summary>System READY 상태</summary>
+
+![All distributed ECUs ready](docs/images/sdv-gui-ready.png)
+
+필수 ECU의 Heartbeat가 정상 수신되고 Vehicle Manager가 `READY`로 전환된
+초기 상태입니다.
+
+</details>
+
+---
+
 ## 핵심 구현
 
 - 6개 ECU를 독립적인 ROS 2 Node로 구성한 분산 아키텍처
