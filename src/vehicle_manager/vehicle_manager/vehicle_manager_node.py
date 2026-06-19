@@ -507,10 +507,8 @@ class VehicleManagerNode(Node):
         result = future.result().result
         if result.success:
             return
-
         if self.state != VehicleState_e.MRM:
             return
-
         self.get_logger().error('MRM Return Home action failed')
         self.change_state(VehicleState_e.EMERGENCY)
 
