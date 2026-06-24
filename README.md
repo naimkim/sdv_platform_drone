@@ -41,7 +41,32 @@ Offboard 비행)**, **2단계(GPS-denied 위치추정 + 회피)**, **3단계(Jet
 
 ---
 
-## Phase 1 — 단일 드론 Offboard 비행 (코드 구현)
+## 실연동 검증 (ROS 2 Humble)
+
+Ubuntu 22.04 + ROS 2 Humble에서 실제로 빌드·테스트·실행해 확인한 결과:
+
+| 항목 | 결과 |
+|---|---|
+| `colcon build` (전체 25 패키지) | ✅ 25/25 (메시지 생성 cmake 3개 포함) |
+| `colcon test` (알고리즘 6 패키지) | ✅ **53 tests, 0 failures** |
+| Phase 4 런타임 (4-drone) | ✅ 4 드론 + consensus, 전원 trusted, `/swarm/pose` 40 Hz |
+| Phase 5 런타임 (insider_teleport) | ✅ `drone_3` TELEPORT 탐지 → 격리, trusted = `[drone_1, drone_2]` |
+
+Phase 5 공격 데모 실측 출력:
+
+```text
+$ ros2 launch swarm_bringup swarm_security.launch.py attack:=insider_teleport
+# /swarm/security_alert :  3× {suspect_id: drone_3, alert_type: TELEPORT}
+# /swarm/status         :  trusted=[drone_1, drone_2]  quarantined=[drone_3]
+```
+
+순수 ROS 2/DDS인 **4·5단계는 실행까지 검증 완료**. 1~3단계는 위 빌드로 패키지·노드·
+메시지가 Humble에서 정상 빌드됨을 확인했고, PX4 SITL/Gazebo·VIO·Jetson 추론 노드와의
+실연동 비행 검증만 남아 🟡로 둔다.
+
+---
+
+## Phase 1 — 단일 드론 Offboard 비행 (코드 구현, Humble 빌드 확인)
 
 PX4 SITL + Gazebo 위에서 MAVROS로 단일 드론을 Offboard 제어한다. 공고의
 **"PID / Control System"** 을 직접 보여주기 위해, 단순 위치 setpoint가 아니라
