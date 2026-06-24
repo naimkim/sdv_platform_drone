@@ -1,29 +1,272 @@
-# ROS 2 SDV Fail-Safe Platform
+# Sentinel Swarm
 
-> 분산 ECU, 상태 머신, 장애 진단 및 보안 이벤트를 통합한
-> ROS 2 기반 Software-Defined Vehicle 제어 플랫폼
+> 보안 내성형 자율 드론 군집 시스템
+> Security-Resilient Autonomous Drone Swarm
 
-이 프로젝트는 차량 기능을 독립적인 ECU Node로 분리하고, 중앙
-`Vehicle Manager`가 차량 상태와 안전 정책을 결정하도록 설계한 ROS 2
-시뮬레이션 플랫폼입니다.
+GPS 없는 환경에서 카메라+IMU만으로 자기위치를 추정하고, Jetson Edge AI로
+객체를 인식하며, 서로 통신해 탐색 영역을 나누는 드론 군집. **단, 통신 계층에
+인증·침입탐지를 넣어 스푸핑/악성 노드가 있어도 군집이 무너지지 않는다.**
 
-정상 주행만 구현하는 데 그치지 않고, **저전압·장애물·ECU 통신 단절·비정상
-데이터**를 감지했을 때 차량이 `MRM(Minimal Risk Maneuver)` 또는
-`EMERGENCY` 상태로 전환되는 전체 흐름을 구현했습니다.
+이 프로젝트의 차별점은 SLAM/YOLO 자체가 아니라 — 그건 누구나 한다 —
+**「보안·안전(ISO 21434, SecOC, CAN IDS)을 아는 자율비행 엔지니어」** 라는
+조합이다. 차량 보안에서 쓰던 SecOC 메시지 인증과 침입탐지(IDS)를 실제 ROS 2
+드론 군집 통신(DDS)에 그대로 이식했고, 그것이 코드로 증명된다.
 
-현재 소프트웨어 시뮬레이션과 장애 주입 시나리오까지 검증했으며, Sensor와
-Motor는 Driver 계층을 분리하여 실제 H/W 제어 코드로 교체할 수 있습니다.
+전체 기획은
+[개발 기획서](docs/SENTINEL_SWARM_DEVELOPMENT_PLAN.docx)를 참고.
 
 ---
 
-## Demo
+## 5단계 로드맵
 
-### Goal-driven Mission
+| 단계 | 내용 | 공고 매핑 | 상태 |
+|---|---|---|:--:|
+| **1** | **ROS 2 + PX4 SITL + Gazebo 단일 드론 Offboard 비행** | **PID / Control** | 🟡 |
+| 2 | VIO/EKF GPS-denied 위치추정 + 장애물 회피 | VIO, GPS-Denied Nav | ⬜ |
+| 3 | Jetson YOLO 실시간 추론(TensorRT) → 회피 경로 반영 | Object Detection, Jetson | ⬜ |
+| 4 | Multi-drone 군집: DDS 위치 공유·영역 분배·충돌 회피 | Swarm Coordination | ⬜ |
+| **5** | **SROS2 인증 + IDS + Byzantine 합의 격리 (차별점)** | **Drone-to-Drone, 신뢰성** | ✅ |
+
+> ✅ 구현·검증 완료 · 🟡 코드 구현 (PX4 SITL 통합 검증 전) · ⬜ 예정
+
+**5단계(보안 내성 레이어)를 먼저 구현**했다 — 군집 통신의 신뢰·인증·이상탐지가
+본 지원자의 본업 영역이고 가장 강한 차별점이기 때문이다. 이어서 **1단계(단일 드론
+Offboard 비행)** 를 구현했고, 2~4단계를 그 위에 올린다.
+
+> **기반 자산(Heritage).** 이 시스템은 백지에서 시작하지 않았다. 분산 ECU·상태머신·
+> 런타임 IDS·공격 노드를 갖춘 [ROS 2 SDV Fail-Safe Platform](#sdv-foundation)을
+> 드론 군집으로 진화시킨 것이다. `security_ecu → swarm_ids`,
+> `attack_node → swarm_attacker`로 검증 로직과 공격 시나리오 패턴이 그대로 이어진다.
+
+---
+
+## Phase 1 — 단일 드론 Offboard 비행 (코드 구현)
+
+PX4 SITL + Gazebo 위에서 MAVROS로 단일 드론을 Offboard 제어한다. 공고의
+**"PID / Control System"** 을 직접 보여주기 위해, 단순 위치 setpoint가 아니라
+**위치 오차 → 속도 setpoint를 축별 PID로 생성**하는 웨이포인트 추종기로 구현했다.
+
+### 동작
+
+```text
+WAIT_FCU → PREFLIGHT → MISSION → LANDING → DONE
+```
+
+1. **WAIT_FCU** — `/mavros/state`의 `connected`를 기다린다.
+2. **PREFLIGHT** — OFFBOARD 유지 조건(>2 Hz setpoint 스트림)을 만족시키기 위해
+   setpoint를 일정 시간 흘린 뒤, `OFFBOARD` 모드 요청 → 시동(arm).
+3. **MISSION** — 각 웨이포인트로 PID 속도 제어. 도달 반경 안에 들면 다음으로 진행.
+4. **LANDING** — 마지막 웨이포인트 후 `AUTO.LAND`, 시동 해제되면 완료.
+
+기본 미션은 고도 3 m에서 한 변 5 m 정사각형 비행이다. 좌표·프레임은 ENU
+(x=East, y=North, z=Up) 기준으로 MAVROS 관례를 따른다.
+
+### 패키지
+
+| 패키지 | 역할 |
+|---|---|
+| `drone_offboard` | PID 제어기(`pid.py`) + MAVROS Offboard 비행 상태머신 |
+| `drone_bringup` | Offboard 노드 + (옵션) MAVROS 통합 launch |
+
+### 실행
+
+```bash
+# 터미널 1 — PX4 SITL + Gazebo
+cd ~/PX4-Autopilot && make px4_sitl gz_x500
+
+# 터미널 2 — MAVROS + Offboard 컨트롤러
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch drone_bringup drone.launch.py mavros:=true
+```
+
+PID 게인을 런타임에 바꿔 튜닝을 시연할 수 있다:
+
+```bash
+ros2 launch drone_bringup drone.launch.py mavros:=true \
+  kp_xy:=1.2 ki_xy:=0.05 kd_xy:=0.25
+```
+
+PID 로직은 ROS 없이도 단위 테스트로 검증된다:
+
+```bash
+colcon test --packages-select drone_offboard
+```
+
+> 상태 🟡: 노드·PID는 구현·단위테스트 완료. PX4 SITL/Gazebo 실연동 비행 검증은
+> Ubuntu 22.04 + ROS 2 Humble + PX4-Autopilot 환경에서 수행 예정.
+
+---
+
+## Phase 5 — 보안 내성 레이어 (구현 완료)
+
+순수 ROS 2 / DDS만으로 동작한다. PX4·Gazebo 없이도 군집 통신 보안 스토리를
+독립적으로 시연할 수 있도록 설계했다.
+
+### 핵심 아이디어 — 2계층 방어
+
+차량 CAN IDS 실무와 동일한 2계층 구조다.
+
+1. **암호 계층 (SecOC식 메시지 인증)** — 모든 군집 메시지는 freshness 값(단조
+   증가 카운터, anti-replay)과 truncated HMAC-SHA256 MAC을 싣는다. 그룹 대칭키를
+   모르는 **외부자**의 위조와 캡처한 프레임의 **재전송**을 차단한다.
+2. **타당성 계층 (IDS plausibility)** — 디코딩된 상태에 범위·발행 주기·텔레포트
+   검사를 적용한다. 그룹키를 가진 **내부자(탈취 노드)** 가 MAC은 유효하지만
+   물리적으로 불가능한 상태를 주장하면 잡아낸다.
+
+탐지된 악성 노드는 **Byzantine 합의 가드**가 정족수(quorum)와 지속 증거
+임계치를 모두 만족할 때 격리하고, 갱신된 신뢰 집합을 발행한다. 정직한 에이전트는
+이 집합으로 탐색 영역을 재분배 — 별도 조정 라운드 없이 오염 노드가 빠진 채
+영역이 다시 나뉜다.
+
+### 아키텍처
+
+```mermaid
+flowchart LR
+    A1["drone_1<br/>swarm_agent"]
+    A2["drone_2<br/>swarm_agent"]
+    A3["drone_3<br/>swarm_agent"]
+    ATK["swarm_attacker<br/>spoof / replay / insider"]
+
+    IDS["swarm_ids<br/>MAC·freshness + plausibility"]
+    CON["swarm_consensus<br/>Byzantine quarantine"]
+
+    A1 & A2 & A3 -->|SignedPose / Heartbeat| IDS
+    ATK -.->|forged / replayed / impossible| IDS
+    IDS -->|SecurityAlert| CON
+    A1 & A2 & A3 -->|Heartbeat| CON
+    CON -->|SwarmStatus<br/>trusted / quarantined| A1 & A2 & A3
+```
+
+### 패키지
+
+| 패키지 | 역할 | SDV 자산 계승 |
+|---|---|---|
+| `swarm_interfaces` | SignedPose·SwarmHeartbeat·SecurityAlert·ConsensusVote·SwarmStatus | `sdv_interfaces` |
+| `swarm_security` | SecOC식 MAC·freshness 검증 라이브러리 (노드 아님) | HSE/SecOC 개념 |
+| `swarm_agent` | 인증된 pose 발행 + 신뢰 집합 기반 섹터 자동 분배 | `motor_ecu` 모션 |
+| `swarm_ids` | MAC/freshness 검증 + 범위·주기·텔레포트 탐지 | `security_ecu` |
+| `swarm_consensus` | 정족수·지속증거 기반 격리 + 신뢰 집합 발행 | `diagnostics_ecu` |
+| `swarm_attacker` | 외부자 위조 / 재전송 / 내부자 텔레포트 주입 | `attack_node` |
+| `swarm_viz` | 군집 상태 → RViz MarkerArray (신뢰/섹터/경보) | `sdv_test_gui` |
+| `swarm_bringup` | 시나리오별 통합 launch (+ RViz) | `sdv_bringup` |
+
+### 실행
+
+```bash
+source /opt/ros/humble/setup.bash
+cd ~/dev/sdv_platform_ws
+colcon build --symlink-install
+source install/setup.bash
+
+# 정상 군집 (3대, 공격 없음)
+ros2 launch swarm_bringup swarm_security.launch.py
+
+# 공격 시나리오
+ros2 launch swarm_bringup swarm_security.launch.py attack:=outsider_spoof
+ros2 launch swarm_bringup swarm_security.launch.py attack:=replay
+ros2 launch swarm_bringup swarm_security.launch.py attack:=insider_teleport
+```
+
+관측 (CLI):
+
+```bash
+ros2 topic echo /swarm/security_alert      # IDS 탐지 이벤트
+ros2 topic echo /swarm/status              # trusted / quarantined 집합
+```
+
+### RViz 시각화
+
+`viz:=true`를 붙이면 `swarm_viz` 노드와 RViz가 함께 뜬다. 군집 상태를
+`visualization_msgs/MarkerArray`로 변환해 위에서 내려다보는 뷰로 보여준다.
+
+```bash
+ros2 launch swarm_bringup swarm_security.launch.py attack:=insider_teleport viz:=true
+```
+
+화면 구성:
+
+- **드론 구체** — 색으로 신뢰 상태 표시: 🟢 trusted · 🟠 탐지 직후(경보) · 🔴 격리(quarantined)
+- **탐색 영역 경계**와 **섹터 분할선** — 신뢰 집합 크기에 따라 자동 재분할 (격리 시 분할선이 줄어듦)
+- **경보 배너** — 최신 IDS 탐지(`[TELEPORT] drone_3` 등)를 상단에 표시, 평상시 `swarm nominal`
+
+`insider_teleport` 데모에서는 `drone_3`이 두 지점을 순간이동하는 게 보이고 →
+🟠로 깜빡이다 → 격리되며 🔴로 바뀌고 → 섹터 분할선이 2분할로 재구성되는 흐름을
+한눈에 볼 수 있다.
+
+> `swarm_viz`는 MAC을 검증하지 않는 순수 모니터다. 발행된 pose를 그대로 그리므로
+> 스푸핑된 위치도 화면에 나타나며, IDS 탐지/격리 결과는 색으로 구분된다.
+
+### 검증 시나리오
+
+| 공격 모드 | 공격 내용 | IDS 탐지 | 합의 결과 |
+|---|---|---|---|
+| `outsider_spoof` | 그룹키 없는 위조 pose | `MAC_INVALID` | 미인증 → 무시 |
+| `replay` | 캡처한 정상 pose 재전송 | `REPLAY` | 재전송 차단 |
+| `insider_teleport` | 탈취 노드의 불가능한 텔레포트 | `TELEPORT` | 노드 격리 → 영역 재분배 |
+
+`insider_teleport`에서는 `drone_3`이 탈취 노드 역할을 하며, IDS가 `TELEPORT`를
+반복 탐지 → 합의 가드가 정족수·지속증거 충족 시 `drone_3`을 격리 → `SwarmStatus`의
+trusted 집합이 `[drone_1, drone_2]`로 줄고 두 노드가 탐색 영역을 다시 나눈다.
+
+---
+
+## 기술 스택
+
+| 구분 | 기술 |
+|---|---|
+| Middleware | ROS 2 Humble (Ubuntu 22.04, LTS) |
+| Flight Stack | PX4 SITL + Gazebo (1~4단계) |
+| Bridge | MAVROS |
+| Localization | VIO + EKF (robot_localization) — 2단계 |
+| Edge AI | Jetson Orin Nano Super + TensorRT — 3단계 |
+| Object Detection | YOLO11 / YOLOv8 — 3단계 |
+| 통신 / 보안 | Fast DDS + SROS2 (DDS-Security, X.509), SecOC식 앱계층 MAC |
+| Language | Python 3.10 (+ 일부 C++) |
+| Build | colcon, ament_python / ament_cmake |
+
+> Humble 채택 이유: PX4/MAVROS 및 드론 생태계 튜토리얼 대다수가 Humble(22.04)
+> 기준이라 호환성·자료 측면에서 유리하다. (SDV 기반은 Jazzy였으나 드론 통합을
+> 위해 Humble로 정렬)
+
+---
+
+## MVP 범위
+
+전체 5단계는 4~6개월 규모다. 시간이 부족하면 최소 버전만으로도 스토리가 완성된다:
+
+- 1·2단계 — GPS-denied 단일 자율비행 (VIO + 회피)
+- 4단계 라이트 — SITL 2대 통신
+- **5단계 핵심 — SROS2 인증 + IDS (현재 저장소에 구현 완료)**
+
+Jetson 실HW와 5대 군집은 확장 계획으로 둔다.
+
+---
+
+## 빌드 및 테스트
+
+```bash
+colcon build --symlink-install
+source install/setup.bash
+
+# SecOC 인증 라이브러리 단위 테스트
+colcon test --packages-select swarm_security
+colcon test-result --verbose
+```
+
+`swarm_security`의 단위 테스트는 MAC 왕복 검증, 잘못된 키/신원/freshness 거부,
+재전송 탐지를 포함한다.
+
+---
+
+<a name="sdv-foundation"></a>
+## 부록 — SDV Fail-Safe Platform (기반 자산)
+
+Sentinel Swarm은 아래 ROS 2 SDV 플랫폼에서 출발했다. 분산 ECU, 차량 상태머신,
+Heartbeat 고장 탐지, 런타임 보안 이벤트, 장애 주입 GUI를 갖춘 시뮬레이션
+플랫폼이며, 그 보안·Fail-Safe 자산이 Phase 5의 직접적인 토대가 되었다.
 
 ![Go To Target mission in progress](docs/images/sdv-gui-mission.png)
-
-`GoToTarget` Action을 실행한 화면입니다. 차량 상태, 목표 위치, Pose,
-속도와 Action 진행률이 하나의 GUI에서 실시간으로 연동됩니다.
 
 <table>
   <tr>
@@ -35,367 +278,23 @@ Motor는 Driver 계층을 분리하여 실제 H/W 제어 코드로 교체할 수
     </td>
   </tr>
   <tr>
-    <td align="center">
-      <strong>Low Battery MRM</strong><br>
-      <sub>SOC 15% 감지 → 기존 Goal 중단 → Return Home 자동 수행</sub>
-    </td>
-    <td align="center">
-      <strong>Cyber Attack Response</strong><br>
-      <sub>SOC 150% 탐지 → Security Event → EMERGENCY Stop</sub>
-    </td>
+    <td align="center"><strong>Low Battery MRM</strong></td>
+    <td align="center"><strong>Cyber Attack Response</strong></td>
   </tr>
 </table>
 
-시연은 정상 동작뿐 아니라 장애를 실제 Topic 데이터로 주입하고,
-`감지 → 상태 전이 → 제어 출력 변경`이 끝까지 연결되는지를 보여줍니다.
-
-<details>
-<summary>System READY 상태</summary>
-
-![All distributed ECUs ready](docs/images/sdv-gui-ready.png)
-
-필수 ECU의 Heartbeat가 정상 수신되고 Vehicle Manager가 `READY`로 전환된
-초기 상태입니다.
-
-</details>
-
----
-
-## 핵심 구현
-
-- 6개 ECU를 독립적인 ROS 2 Node로 구성한 분산 아키텍처
-- `INIT → READY → MISSION → MRM / EMERGENCY` 상태 머신
-- 저전압 감지 시 자동 Return Home 및 limp mode 주행
-- 장애물 감지 시 주행·Action 일시정지 후 자동 재개
-- Heartbeat timeout 기반 ECU 고장 탐지
-- 비정상 SOC 및 Motor 데이터 기반 보안 이벤트 탐지
-- 고장 또는 보안 이벤트 수신 시 Motor Emergency Stop
-- 장시간 주행 명령을 위한 비동기 ROS 2 Action
-- PyQt5 기반 모니터링·제어·장애 주입 GUI
-- `SimDriver / HwDriver` 분리를 통한 H/W 확장 구조
-
-## 기술 스택
-
-| 구분 | 기술 |
-|---|---|
-| Middleware | ROS 2 Jazzy, DDS |
-| Language | Python 3.12 |
-| Communication | Topic, Service, Action |
-| Concurrency | MultiThreadedExecutor, ReentrantCallbackGroup |
-| GUI | PyQt5 |
-| Build | colcon, ament_python, ament_cmake |
-| Platform | Ubuntu 24.04 |
-
----
-
-## 시스템 아키텍처
-
-```mermaid
-flowchart TB
-    VM["Vehicle Manager<br/>State Machine · Safety Decision"]
-
-    BAT["Battery ECU<br/>SOC · Voltage · Current"]
-    SEN["Sensor ECU<br/>Obstacle Detection"]
-    MOT["Motor ECU<br/>Motion Control · Action Server"]
-    DIA["Diagnostics ECU<br/>Heartbeat · Fault"]
-    SEC["Security ECU<br/>Anomaly Detection"]
-
-    GUI["Test GUI<br/>Monitoring · Control · Fault Injection"]
-    ATK["Attack Node<br/>Invalid SOC Injection"]
-    HW["Sensor / Motor H/W<br/>(integration target)"]
-
-    BAT -->|BatteryStatus| VM
-    SEN -->|ObstacleInfo| VM
-    DIA -->|DiagnosticEvent| VM
-    SEC -->|SecurityEvent| VM
-    VM -->|VehicleState| MOT
-    VM -->|ReturnHome Goal| MOT
-
-    BAT & SEN & MOT & DIA & SEC -->|Heartbeat| DIA
-    GUI <--> VM
-    GUI <--> BAT
-    GUI <--> MOT
-    ATK -->|Spoofed BatteryStatus| SEC
-    SEN <--> HW
-    MOT <--> HW
-```
-
-### ECU별 책임
-
-| Node | 책임 |
-|---|---|
-| Vehicle Manager | 차량 상태 머신, 미션 수명주기, MRM 및 최종 안전 판단 |
-| Battery ECU | SOC·전압·전류 발행, 저전압 시나리오 제공 |
-| Sensor ECU | 장애물 정보 발행, 센서 캘리브레이션, Driver 추상화 |
-| Motor ECU | 상태별 속도 정책, Pose 갱신, 이동 Action, Emergency Stop |
-| Diagnostics ECU | ECU Heartbeat 감시, timeout 판정, fault 저장·조회 |
-| Security ECU | Battery·Motor·Vehicle 데이터 유효성 검사 및 공격 이벤트 발행 |
-| Test GUI | 차량 상태 시각화, 미션·Action 제어, 센서·배터리 시뮬레이션 |
-| Attack Node | SOC 150% 메시지를 발행하는 보안 테스트용 공격 노드 |
-
----
-
-## 상태 머신과 Fail-Safe 정책
-
-```mermaid
-stateDiagram-v2
-    [*] --> INIT
-    INIT --> READY: 필수 ECU 및 Battery 확인
-    READY --> MISSION: StartMission
-    MISSION --> READY: Mission 완료
-
-    READY --> MRM: SOC <= 20%
-    MISSION --> MRM: SOC <= 20%
-    MRM --> LOW_BATTERY: Return Home 성공
-    LOW_BATTERY --> INIT: SOC >= 25% / 5초 유지
-
-    INIT --> EMERGENCY: 진단·보안 오류
-    READY --> EMERGENCY: 진단·보안 오류
-    MISSION --> EMERGENCY: 진단·보안 오류
-    MRM --> EMERGENCY: Return Home 실패
-    EMERGENCY --> INIT: ResetEmergency
-```
-
-| 상태 | `mission_active` | Motor 정책 |
-|---|---:|---|
-| READY | false | 정지 |
-| MISSION | true | 정상 속도 `0.4 m/s` |
-| MISSION | false | 장애물 해제까지 정지 |
-| LOW_BATTERY | true | limp mode `0.1 m/s` |
-| MRM | true | 원점까지 자동 복귀 |
-| FAULT / EMERGENCY | 무관 | 즉시 정지 |
-
-### 저전압 MRM 시나리오
-
-1. Battery SOC가 20% 이하로 내려가면 Vehicle Manager가 `MRM`으로 전환합니다.
-2. `/return_home` Action Goal을 Motor ECU에 비동기로 전송합니다.
-3. Motor ECU는 속도를 `0.1 m/s`로 제한하고 원점 `(0, 0)`으로 이동합니다.
-4. 장애물이 감지되면 Action과 주행을 정지하고, 해제 후 이어서 수행합니다.
-5. 복귀 성공 시 `LOW_BATTERY`로 대기합니다.
-6. Goal 거부·실행 실패·재시도 초과 시 `EMERGENCY`로 전환합니다.
-
-### 왜 Service가 아니라 Action인가?
-
-Return Home은 요청 즉시 완료되는 RPC가 아니라, 목표를 수락한 후 수 초 이상
-독립적으로 실행되는 작업입니다. 따라서 다음 요구사항을 기준으로 Action을
-선택했습니다.
-
-- 명령 수락과 실제 작업 완료를 분리
-- Executor를 점유하지 않는 비동기 결과 처리
-- 실행 중 취소 및 안전 상태에 따른 중단
-- 성공·실패·취소 상태 구분
-- 이동 진행률 Feedback 제공 및 향후 잔여 거리 확장
-
-진행률 표시는 부가 기능이며, 핵심 선택 기준은 **장시간 작업의 수명주기와
-최종 완료 여부를 명시적으로 관리할 수 있는가**입니다.
-
----
-
-## ROS 2 인터페이스
-
-### Topics
-
-| Topic | Publisher | 용도 |
-|---|---|---|
-| `/ecu/vehicle/status` | Vehicle Manager | 차량 상태와 미션 활성 여부 |
-| `/ecu/battery/status` | Battery ECU | SOC, 전압, 전류 |
-| `/ecu/obstacle/info` | Sensor ECU | 장애물 탐지, 거리, 각도 |
-| `/ecu/motor/status` | Motor ECU | 목표·현재 선속도/각속도, 활성 상태 |
-| `/ecu/vehicle/pose` | Motor ECU | 시뮬레이션 차량 위치 |
-| `/ecu/heartbeat` | 각 ECU | ECU 생존 상태 |
-| `/ecu/diagnostics/event` | Diagnostics ECU | fault 및 timeout 이벤트 |
-| `/ecu/security/event` | Security ECU | 비정상 데이터 탐지 이벤트 |
-
-### Services
-
-| Service | Server | 용도 |
-|---|---|---|
-| `/ecu/vehicle/start_mission` | Vehicle Manager | 미션 시작 |
-| `/ecu/vehicle/complete_mission` | Vehicle Manager | 미션 완료 처리 |
-| `/ecu/vehicle/reset_emergency` | Vehicle Manager | EMERGENCY 해제 및 재초기화 |
-| `/ecu/sensor/calibrate` | Sensor ECU | 센서 캘리브레이션 |
-| `/ecu/diagnostics/get_fault_info` | Diagnostics ECU | 현재 fault 조회 |
-| `/ecu/diagnostics/clear_fault` | Diagnostics ECU | fault 초기화 |
-
-### Actions
-
-| Action | Server | Goal | Feedback | Result |
-|---|---|---|---|---|
-| `/go_to_target` | Motor ECU | 목표 `x`, `y` | 진행률 | 성공 여부 |
-| `/return_home` | Motor ECU | 복귀 시작 | 진행률 | 성공 여부 |
-
----
-
-## 장애 감지와 안전 대응
-
-### ECU 통신 단절
-
-각 ECU는 1초 주기로 Heartbeat를 발행합니다. Diagnostics ECU는 필수 ECU의
-Heartbeat가 3초 이상 수신되지 않으면 ERROR 이벤트를 발행하고, Vehicle
-Manager는 이를 수신하여 `EMERGENCY`로 전환합니다.
-
-```text
-Sensor ECU 종료
-  → Heartbeat timeout
-  → DiagnosticEvent(ERROR)
-  → Vehicle Manager: EMERGENCY
-  → Motor ECU: emergency_stop()
-```
-
-### 비정상 데이터 공격
-
-Security ECU는 주요 Topic의 값 범위와 상태 일관성을 검사합니다.
-
-- SOC: `0–100%`
-- Voltage: `0–80V`
-- Current: 절댓값 `500A` 이하
-- Motor 속도 범위 및 disabled 상태에서의 비정상 속도
-- 유효하지 않은 Vehicle State
-
-Attack Node가 SOC 150% 메시지를 발행하면 Security Event가 생성되고,
-Vehicle Manager가 `EMERGENCY`로 전환됩니다.
-
----
-
-## 실행 방법
-
-### 환경
-
-- Ubuntu 24.04
-- ROS 2 Jazzy
-- Python 3.12
-- PyQt5
-
-```bash
-source /opt/ros/jazzy/setup.bash
-
-cd ~/dev/sdv_platform_ws
-rosdep install --from-paths src --ignore-src -r -y
-colcon build --symlink-install
-source install/setup.bash
-```
-
-전체 시스템 실행:
-
-```bash
-ros2 launch sdv_bringup sdv_system.launch.py
-```
-
-GUI 없이 실행:
-
-```bash
-ros2 launch sdv_bringup sdv_system.launch.py gui:=false
-```
-
-특정 ECU를 제외하거나 Driver mode를 지정할 수 있습니다.
-
-```bash
-ros2 launch sdv_bringup sdv_system.launch.py \
-  gui:=false \
-  security:=false \
-  sensor_driver_mode:=sim \
-  motor_driver_mode:=sim
-```
-
-### CLI 동작 확인
-
-```bash
-# 미션 시작
-ros2 service call /ecu/vehicle/start_mission \
-  sdv_interfaces/srv/StartMission "{}"
-
-# 목표 위치 이동
-ros2 action send_goal /go_to_target \
-  sdv_interfaces/action/GoToTarget "{x: 1.0, y: 1.0}" \
-  --feedback
-
-# 차량 상태 확인
-ros2 topic echo /ecu/vehicle/status
-
-# fault 확인
-ros2 service call /ecu/diagnostics/get_fault_info \
-  sdv_interfaces/srv/GetFaultInfo "{}"
-```
-
----
-
-## 검증 시나리오
-
-| 시나리오 | 입력 | 기대 결과 |
-|---|---|---|
-| 정상 주행 | Start Mission | `READY → MISSION`, Motor 가속 |
-| 장애물 대응 | 장애물 감지 | 정지 후 장애물 해제 시 미션 재개 |
-| 저전압 MRM | SOC 20% 이하 | `MRM`, limp mode Return Home |
-| ECU Failure | Sensor ECU 종료 | 약 3초 후 `EMERGENCY`, Motor 정지 |
-| Cyber Attack | SOC 150% 발행 | Security Event, `EMERGENCY` |
-| Action 취소 | 실행 중 cancel | Motor 정지, `CANCELED` 결과 |
-
-빌드 및 패키지 테스트:
-
-```bash
-colcon test
-colcon test-result --verbose
-```
-
-상세 구현·시연 결과는
+SDV 플랫폼 자체의 분산 ECU 아키텍처, 상태머신, Fail-Safe 정책, ROS 2
+Topic/Service/Action 인터페이스 설계 상세는
 [구현 및 시연 결과 보고서](docs/SDV_PLATFORM_IMPLEMENTATION_AND_DEMO_REPORT.md)에서
-확인할 수 있습니다.
+확인할 수 있다.
 
----
+### SDV → Swarm 진화 매핑
 
-## H/W 확장 구조
-
-Sensor와 Motor 제어는 Node 로직과 Driver 구현을 분리했습니다.
-
-```text
-SensorNode ── SensorDriverBase ── SimSensorDriver
-                              └── HwSensorDriver
-
-MotorNode  ── MotorDriverBase  ── SimMotorDriver
-                              └── HwMotorDriver
-```
-
-Launch parameter의 `driver_mode`를 통해 `sim`과 `hw` 구현을 선택합니다.
-현재 `HwSensorDriver`와 `HwMotorDriver`는 교체 지점을 제공하는 단계이며,
-실제 Mentor Pi M1 통신·센싱 로직과 HIL 검증은 다음 통합 범위입니다.
-
----
-
-## 프로젝트에서 보여주는 역량
-
-- ROS 2 Topic·Service·Action을 목적에 맞게 구분한 인터페이스 설계
-- 분산 Node의 상태를 통합하는 차량 상태 머신 설계
-- Future callback 기반 비동기 Action 처리
-- Heartbeat, timeout, retry를 활용한 fault-tolerant 제어
-- 진단과 보안을 최종 안전 동작까지 연결한 Fail-Safe 설계
-- 시뮬레이션과 실제 H/W 구현을 분리한 Driver 추상화
-- 정상 경로뿐 아니라 실패 주입 시나리오를 포함한 시스템 검증
-
-## 패키지 구성
-
-```text
-src/
-├── sdv_interfaces/     # Custom Message, Service, Action
-├── vehicle_manager/    # State machine and safety decision
-├── battery_ecu/        # Battery status
-├── sensor_ecu/         # Obstacle sensing and sensor driver
-├── motor_ecu/          # Motion policy, motor driver and Action server
-├── diagnostics_ecu/    # Heartbeat and fault management
-├── security_ecu/       # Runtime anomaly detection
-├── attack_node/        # Security test traffic generator
-├── sdv_test_gui/       # PyQt5 test and monitoring GUI
-└── sdv_bringup/        # Integrated launch
-```
-
-## 현재 상태
-
-- [x] 분산 ECU 및 Custom Interface 구현
-- [x] 차량 상태 머신과 미션 제어
-- [x] 장애물 정지·재개
-- [x] 저전압 MRM 및 Return Home
-- [x] Heartbeat fault detection
-- [x] Runtime security detection
-- [x] GUI 및 장애 주입 시연
-- [x] Sim Driver 기반 통합 검증
-- [ ] 실제 Sensor/Motor H/W 제어 구현
-- [ ] HIL 기반 반복·지연·안전 정지 검증
+| SDV (기반) | Sentinel Swarm (진화) |
+|---|---|
+| `security_ecu` 데이터 유효성 검사 | `swarm_ids` 군집 메시지 IDS |
+| `attack_node` 스푸핑 주입 | `swarm_attacker` 위조/재전송/내부자 |
+| `vehicle_manager` 상태머신 | 드론 비행/군집 상태 조정 |
+| `diagnostics_ecu` Heartbeat/timeout | `swarm_consensus` 노드 생존·신뢰도 |
+| `sdv_interfaces` Custom msg | `swarm_interfaces` SignedPose 등 |
+| Sim/Hw Driver 추상화 | PX4 SITL ↔ 실HW 교체 지점 |

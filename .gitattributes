@@ -1,0 +1,12 @@
+# Normalize line endings to LF in the repository (this is a ROS 2 / Linux
+# project; CRLF can break shell scripts and produces noisy diffs on Windows).
+* text=auto eol=lf
+
+# Treat known binary assets as binary (no EOL conversion, no diff).
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.docx binary
+*.db3 binary
+*.mcap binary

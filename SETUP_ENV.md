@@ -36,14 +36,26 @@ git push -u origin main
     └── sdv_platform_ws/
         │
         ├── src/
-        │   ├── vehicle_manager/
+        │   ├── vehicle_manager/      # SDV heritage (Phase 1 foundation)
         │   ├── battery_ecu/
         │   ├── sensor_ecu/
         │   ├── motor_ecu/
         │   ├── diagnostics_ecu/
         │   ├── security_ecu/
         │   ├── attack_node/
-        │   └── sdv_interfaces/
+        │   ├── sdv_interfaces/
+        │   │
+        │   ├── swarm_interfaces/     # Sentinel Swarm — Phase 5
+        │   ├── swarm_security/       # SecOC-style MAC + freshness lib
+        │   ├── swarm_agent/          # authenticated swarm member
+        │   ├── swarm_ids/            # swarm intrusion detection
+        │   ├── swarm_consensus/      # Byzantine-resilient quarantine
+        │   ├── swarm_attacker/       # adversary traffic generator
+        │   ├── swarm_viz/            # RViz MarkerArray bridge
+        │   ├── swarm_bringup/        # integrated security-layer launch
+        │   │
+        │   ├── drone_offboard/       # Phase 1 — PID Offboard controller
+        │   └── drone_bringup/        # Phase 1 — SITL/MAVROS bringup launch
         │
         ├── docs/
         │
@@ -77,10 +89,10 @@ wsl --list --online
 
 ---
 
-## Ubuntu 24.04 설치
+## Ubuntu 22.04 설치
 
 ```powershell
-wsl --install Ubuntu-24.04
+wsl --install Ubuntu-22.04
 ```
 
 ---
@@ -96,7 +108,7 @@ wsl -l -v
 ## Ubuntu 접속
 
 ```powershell
-wsl -d Ubuntu-24.04
+wsl -d Ubuntu-22.04
 ```
 
 ---
@@ -110,8 +122,8 @@ cat /etc/os-release
 Expected
 
 ```text
-VERSION_ID="24.04"
-UBUNTU_CODENAME=noble
+VERSION_ID="22.04"
+UBUNTU_CODENAME=jammy
 ```
 
 ---
@@ -150,7 +162,7 @@ VSCode
 ↓
 Connect to WSL
 ↓
-Ubuntu-24.04 선택
+Ubuntu-22.04 선택
 ```
 
 ---
@@ -160,7 +172,7 @@ Ubuntu-24.04 선택
 ## WSL 터미널
 
 ```bash
-lsb_release -a          # expect = Ubuntu 24.04
+lsb_release -a          # expect = Ubuntu 22.04
 uname -m                # expect = x86_64
 
 # Locale
@@ -181,16 +193,16 @@ sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
 -o /usr/share/keyrings/ros-archive-keyring.gpg
 
 # ROS Repository 등록
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu noble main" | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu jammy main" | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
 
 # 패키지 목록 갱신
 sudo apt update
 
 # ROS2 Jazzy 설치
-sudo apt install ros-jazzy-desktop -y
+sudo apt install ros-humble-desktop -y
 
 # 환경변수 등록
-echo "source /opt/ros/jazzy/setup.bash" >> ~/.bashrc
+echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
 source ~/.bashrc
 
 # 설치 확인
@@ -304,7 +316,7 @@ pip install PyQt5
 
 ```bash
 cd ~/dev/sdv_platform_ws
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/humble/setup.bash
 source .venv/bin/activate
 
 colcon build
@@ -326,7 +338,7 @@ source install/setup.bash
 
 ```bash
 cd ~/dev/sdv_platform_ws
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/humble/setup.bash
 source .venv/bin/activate
 source install/setup.bash
 
@@ -337,7 +349,7 @@ ros2 run vehicle_manager vehicle_manager_node
 
 ```bash
 cd ~/dev/sdv_platform_ws
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/humble/setup.bash
 source .venv/bin/activate
 source install/setup.bash
 
@@ -351,7 +363,7 @@ ros2 run sdv_test_gui test_gui_node
 아래 내용을 `~/.bashrc`에 추가하면 새 터미널에서 ROS2 기본 환경이 자동으로 잡힌다.
 
 ```bash
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/humble/setup.bash
 ```
 
 워크스페이스와 venv는 프로젝트마다 다를 수 있으므로, 작업 시작할 때 워크스페이스 루트에서 직접 실행하는 것을 권장한다.
@@ -360,4 +372,52 @@ source /opt/ros/jazzy/setup.bash
 cd ~/dev/sdv_platform_ws
 source .venv/bin/activate
 source install/setup.bash
+```
+
+---
+
+# Phase 1 — PX4 SITL + MAVROS
+
+단일 드론 Offboard 비행(`drone_offboard`)을 돌리려면 PX4 SITL과 MAVROS가 필요하다.
+
+## MAVROS 설치
+
+```bash
+sudo apt install ros-humble-mavros ros-humble-mavros-msgs -y
+
+# GeographicLib 데이터셋 (MAVROS 필수)
+ros2 run mavros install_geographiclib_datasets.sh
+# 위 스크립트 경로가 없으면:
+# sudo /opt/ros/humble/lib/mavros/install_geographiclib_datasets.sh
+```
+
+## PX4-Autopilot (SITL + Gazebo)
+
+```bash
+cd ~
+git clone https://github.com/PX4/PX4-Autopilot.git --recursive
+cd PX4-Autopilot
+bash ./Tools/setup/ubuntu.sh        # 의존성 설치 (재부팅 권장)
+
+# SITL + Gazebo (x500 기체) 빌드/실행
+make px4_sitl gz_x500
+```
+
+## 비행 실행
+
+```bash
+# 터미널 1 — PX4 SITL
+cd ~/PX4-Autopilot && make px4_sitl gz_x500
+
+# 터미널 2 — MAVROS + Offboard 컨트롤러
+source /opt/ros/humble/setup.bash
+cd ~/dev/sdv_platform_ws && source install/setup.bash
+ros2 launch drone_bringup drone.launch.py mavros:=true
+```
+
+연결 확인:
+
+```bash
+ros2 topic echo /mavros/state          # connected: true 확인
+ros2 topic echo /mavros/local_position/pose
 ```
