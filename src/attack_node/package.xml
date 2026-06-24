@@ -4,7 +4,7 @@
   <name>attack_node</name>
   <version>0.0.0</version>
   <description>Battery spoofing attack generator for SDV security demos</description>
-  <maintainer email="owljun2@gmail.com">seokjunkang</maintainer>
+  <maintainer email="naimkim1013@gmail.com">naimkim</maintainer>
   <license>TODO: License declaration</license>
 
   <depend>rclpy</depend>

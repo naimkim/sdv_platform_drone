@@ -4,7 +4,7 @@
   <name>drone_offboard</name>
   <version>0.0.0</version>
   <description>PX4 Offboard waypoint follower over MAVROS with PID velocity control (Phase 1).</description>
-  <maintainer email="owljun2@gmail.com">seokjunkang</maintainer>
+  <maintainer email="naimkim1013@gmail.com">naimkim</maintainer>
   <license>Apache-2.0</license>
 
   <exec_depend>rclpy</exec_depend>

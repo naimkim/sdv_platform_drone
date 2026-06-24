@@ -4,7 +4,7 @@
   <name>drone_bringup</name>
   <version>0.0.0</version>
   <description>Phase 1 single-drone Offboard bringup (controller + optional MAVROS).</description>
-  <maintainer email="owljun2@gmail.com">seokjunkang</maintainer>
+  <maintainer email="naimkim1013@gmail.com">naimkim</maintainer>
   <license>Apache-2.0</license>
 
   <exec_depend>launch</exec_depend>

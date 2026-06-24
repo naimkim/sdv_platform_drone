@@ -3,7 +3,7 @@
   <name>sdv_interfaces</name>
   <version>0.0.0</version>
   <description>TODO: Package description</description>
-  <maintainer email="seokjunkang@todo.todo">seokjunkang</maintainer>
+  <maintainer email="naimkim1013@gmail.com">naimkim</maintainer>
   <license>TODO: License declaration</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

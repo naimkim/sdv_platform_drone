@@ -4,7 +4,7 @@
   <name>sdv_bringup</name>
   <version>0.0.0</version>
   <description>Launch files for the SDV distributed ECU simulation platform.</description>
-  <maintainer email="owljun2@gmail.com">seokjunkang</maintainer>
+  <maintainer email="naimkim1013@gmail.com">naimkim</maintainer>
   <license>TODO: License declaration</license>
 
   <exec_depend>launch</exec_depend>

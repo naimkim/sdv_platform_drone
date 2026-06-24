@@ -18,8 +18,8 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='seokjunkang',
-    maintainer_email='owljun2@gmail.com',
+    maintainer='naimkim',
+    maintainer_email='naimkim1013@gmail.com',
     description='RViz visualization bridge for the Sentinel Swarm.',
     license='Apache-2.0',
     extras_require={

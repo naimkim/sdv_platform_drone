@@ -13,8 +13,8 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='seokjunkang',
-    maintainer_email='owljun2@gmail.com',
+    maintainer='naimkim',
+    maintainer_email='naimkim1013@gmail.com',
     description='SecOC-style message authentication primitives for the swarm bus.',
     license='Apache-2.0',
     extras_require={

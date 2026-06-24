@@ -4,7 +4,7 @@
   <name>swarm_consensus</name>
   <version>0.0.0</version>
   <description>Byzantine-resilient quarantine consensus and swarm trust-view publisher.</description>
-  <maintainer email="owljun2@gmail.com">seokjunkang</maintainer>
+  <maintainer email="naimkim1013@gmail.com">naimkim</maintainer>
   <license>Apache-2.0</license>
 
   <exec_depend>rclpy</exec_depend>

@@ -4,7 +4,7 @@
   <name>swarm_viz</name>
   <version>0.0.0</version>
   <description>RViz visualization bridge: turns the swarm bus into MarkerArray markers (trust state, sectors, alerts).</description>
-  <maintainer email="owljun2@gmail.com">seokjunkang</maintainer>
+  <maintainer email="naimkim1013@gmail.com">naimkim</maintainer>
   <license>Apache-2.0</license>
 
   <exec_depend>rclpy</exec_depend>

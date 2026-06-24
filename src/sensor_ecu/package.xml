@@ -4,7 +4,7 @@
   <name>sensor_ecu</name>
   <version>0.0.0</version>
   <description>TODO: Package description</description>
-  <maintainer email="owljun2@gmail.com">seokjunkang</maintainer>
+  <maintainer email="naimkim1013@gmail.com">naimkim</maintainer>
   <license>TODO: License declaration</license>
 
   <depend>rclpy</depend>

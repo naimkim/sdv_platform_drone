@@ -4,7 +4,7 @@
   <name>swarm_ids</name>
   <version>0.0.0</version>
   <description>Intrusion detection for the swarm bus: SecOC MAC/freshness verification plus state plausibility checks.</description>
-  <maintainer email="owljun2@gmail.com">seokjunkang</maintainer>
+  <maintainer email="naimkim1013@gmail.com">naimkim</maintainer>
   <license>Apache-2.0</license>
 
   <exec_depend>rclpy</exec_depend>
