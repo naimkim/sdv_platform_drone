@@ -1,19 +1,17 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>drone_bringup</name>
+  <name>drone_avoidance</name>
   <version>0.0.0</version>
-  <description>Phase 1 single-drone Offboard bringup (controller + optional MAVROS).</description>
+  <description>Reactive potential-field obstacle avoidance for GPS-denied navigation (Phase 2).</description>
   <maintainer email="naimkim1013@gmail.com">naimkim</maintainer>
   <license>Apache-2.0</license>
 
-  <exec_depend>launch</exec_depend>
-  <exec_depend>launch_ros</exec_depend>
-  <exec_depend>drone_offboard</exec_depend>
-  <exec_depend>drone_localization</exec_depend>
-  <exec_depend>drone_avoidance</exec_depend>
-  <exec_depend>mavros</exec_depend>
-  <exec_depend>mavros_msgs</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

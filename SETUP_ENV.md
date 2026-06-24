@@ -55,7 +55,10 @@ git push -u origin main
         │   ├── swarm_bringup/        # integrated security-layer launch
         │   │
         │   ├── drone_offboard/       # Phase 1 — PID Offboard controller
-        │   └── drone_bringup/        # Phase 1 — SITL/MAVROS bringup launch
+        │   ├── drone_interfaces/     # Phase 2 — LocalizationStatus msg
+        │   ├── drone_localization/   # Phase 2 — VIO/GPS fusion + GPS monitor
+        │   ├── drone_avoidance/      # Phase 2 — potential-field avoidance
+        │   └── drone_bringup/        # Phase 1/2 bringup launches
         │
         ├── docs/
         │

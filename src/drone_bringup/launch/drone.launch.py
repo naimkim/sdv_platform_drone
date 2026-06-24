@@ -49,6 +49,9 @@ def generate_launch_description():
         DeclareLaunchArgument('kp_z', default_value='1.2'),
         DeclareLaunchArgument('ki_z', default_value='0.1'),
         DeclareLaunchArgument('kd_z', default_value='0.0'),
+        DeclareLaunchArgument(
+            'use_avoidance', default_value='false',
+            description='take horizontal velocity from drone_avoidance'),
 
         Node(
             package='mavros', executable='mavros_node', name='mavros',
@@ -70,6 +73,8 @@ def generate_launch_description():
                 'kp_z': gain('kp_z'),
                 'ki_z': gain('ki_z'),
                 'kd_z': gain('kd_z'),
+                'use_avoidance': ParameterValue(
+                    LaunchConfiguration('use_avoidance'), value_type=bool),
             }],
         ),
     ])

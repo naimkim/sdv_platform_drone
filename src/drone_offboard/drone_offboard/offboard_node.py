@@ -5,7 +5,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, TwistStamped
 from mavros_msgs.msg import PositionTarget, State
 from mavros_msgs.srv import CommandBool, SetMode
 
@@ -78,6 +78,13 @@ class OffboardController(Node):
         self.declare_parameter('kp_z', DEFAULT_KP_Z)
         self.declare_parameter('ki_z', DEFAULT_KI_Z)
         self.declare_parameter('kd_z', DEFAULT_KD_Z)
+        # When true, horizontal velocity comes from the Phase 2 avoidance node
+        # (the controller publishes each waypoint as the avoidance goal and
+        # follows the returned obstacle-aware velocity); altitude stays on PID.
+        self.declare_parameter('use_avoidance', False)
+
+        self.use_avoidance = bool(self.get_parameter('use_avoidance').value)
+        self.avoidance_xy = None
 
         self.waypoints = self.load_waypoints()
         self.pid_x = self.make_xy_pid()
@@ -99,6 +106,14 @@ class OffboardController(Node):
         self.setpoint_publisher = self.create_publisher(
             PositionTarget, '/mavros/setpoint_raw/local', 10)
 
+        self.goal_publisher = None
+        if self.use_avoidance:
+            self.goal_publisher = self.create_publisher(
+                PoseStamped, '/goal_pose', 10)
+            self.create_subscription(
+                TwistStamped, '/drone/avoidance_cmd',
+                self.avoidance_callback, qos_profile_sensor_data)
+
         self.create_subscription(
             State, '/mavros/state', self.state_callback, 10)
         self.create_subscription(
@@ -113,9 +128,10 @@ class OffboardController(Node):
         self.control_timer = self.create_timer(
             1.0 / CONTROL_RATE_HZ, self.control_tick)
 
+        mode = 'avoidance-driven' if self.use_avoidance else 'direct PID'
         self.get_logger().info(
             f'Offboard controller started with {len(self.waypoints)} '
-            f'waypoint(s)')
+            f'waypoint(s), horizontal control: {mode}')
 
     # -- setup helpers --------------------------------------------------
 
@@ -142,6 +158,9 @@ class OffboardController(Node):
     def pose_callback(self, msg):
         p = msg.pose.position
         self.current = (p.x, p.y, p.z)
+
+    def avoidance_callback(self, msg):
+        self.avoidance_xy = (msg.twist.linear.x, msg.twist.linear.y)
 
     # -- main loop ------------------------------------------------------
 
@@ -171,9 +190,16 @@ class OffboardController(Node):
 
         tx, ty, tz = self.waypoints[self.wp_index]
         cx, cy, cz = self.current
-        vx = self.pid_x.update(tx - cx, dt)
-        vy = self.pid_y.update(ty - cy, dt)
-        vz = self.pid_z.update(tz - cz, dt)
+
+        if self.use_avoidance and self.avoidance_xy is not None:
+            # Horizontal velocity is obstacle-aware (from drone_avoidance);
+            # the controller still owns altitude via PID.
+            vx, vy = self.avoidance_xy
+            vz = self.pid_z.update(tz - cz, dt)
+        else:
+            vx = self.pid_x.update(tx - cx, dt)
+            vy = self.pid_y.update(ty - cy, dt)
+            vz = self.pid_z.update(tz - cz, dt)
 
         # Clamp the horizontal vector magnitude (per-axis limits aren't enough).
         speed = math.hypot(vx, vy)
@@ -216,6 +242,7 @@ class OffboardController(Node):
             self.reset_pids()
             self.wp_index = 0
             self.phase = MISSION
+            self.publish_goal()
 
     def tick_mission(self):
         if self.current is None:
@@ -228,6 +255,7 @@ class OffboardController(Node):
             if self.wp_index + 1 < len(self.waypoints):
                 self.wp_index += 1
                 self.reset_pids()
+                self.publish_goal()
                 self.get_logger().info(
                     f'Reached waypoint, advancing to #{self.wp_index} '
                     f'{self.waypoints[self.wp_index]}')
@@ -273,6 +301,20 @@ class OffboardController(Node):
         self.pid_x.reset()
         self.pid_y.reset()
         self.pid_z.reset()
+
+    def publish_goal(self):
+        """Publish the active waypoint as the avoidance goal (/goal_pose)."""
+        if self.goal_publisher is None:
+            return
+        tx, ty, tz = self.waypoints[self.wp_index]
+        msg = PoseStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = 'map'
+        msg.pose.position.x = float(tx)
+        msg.pose.position.y = float(ty)
+        msg.pose.position.z = float(tz)
+        msg.pose.orientation.w = 1.0
+        self.goal_publisher.publish(msg)
 
 
 def main(args=None):

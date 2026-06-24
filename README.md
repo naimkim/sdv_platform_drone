@@ -22,7 +22,7 @@ GPS 없는 환경에서 카메라+IMU만으로 자기위치를 추정하고, Jet
 | 단계 | 내용 | 공고 매핑 | 상태 |
 |---|---|---|:--:|
 | **1** | **ROS 2 + PX4 SITL + Gazebo 단일 드론 Offboard 비행** | **PID / Control** | 🟡 |
-| 2 | VIO/EKF GPS-denied 위치추정 + 장애물 회피 | VIO, GPS-Denied Nav | ⬜ |
+| **2** | **VIO/EKF GPS-denied 위치추정 + 장애물 회피** | **VIO, GPS-Denied Nav** | 🟡 |
 | 3 | Jetson YOLO 실시간 추론(TensorRT) → 회피 경로 반영 | Object Detection, Jetson | ⬜ |
 | 4 | Multi-drone 군집: DDS 위치 공유·영역 분배·충돌 회피 | Swarm Coordination | ⬜ |
 | **5** | **SROS2 인증 + IDS + Byzantine 합의 격리 (차별점)** | **Drone-to-Drone, 신뢰성** | ✅ |
@@ -31,7 +31,7 @@ GPS 없는 환경에서 카메라+IMU만으로 자기위치를 추정하고, Jet
 
 **5단계(보안 내성 레이어)를 먼저 구현**했다 — 군집 통신의 신뢰·인증·이상탐지가
 본 지원자의 본업 영역이고 가장 강한 차별점이기 때문이다. 이어서 **1단계(단일 드론
-Offboard 비행)** 를 구현했고, 2~4단계를 그 위에 올린다.
+Offboard 비행)**, **2단계(GPS-denied 위치추정 + 회피)** 를 구현했고, 3~4단계를 그 위에 올린다.
 
 > **기반 자산(Heritage).** 이 시스템은 백지에서 시작하지 않았다. 분산 ECU·상태머신·
 > 런타임 IDS·공격 노드를 갖춘 [ROS 2 SDV Fail-Safe Platform](#sdv-foundation)을
@@ -95,6 +95,81 @@ colcon test --packages-select drone_offboard
 
 > 상태 🟡: 노드·PID는 구현·단위테스트 완료. PX4 SITL/Gazebo 실연동 비행 검증은
 > Ubuntu 22.04 + ROS 2 Humble + PX4-Autopilot 환경에서 수행 예정.
+
+---
+
+## Phase 2 — GPS-denied 위치추정 + 장애물 회피 (코드 구현)
+
+GPS가 막히거나 **스푸핑**될 때 카메라+IMU 기반 VIO로 위치추정을 이어가고, 경로상
+장애물을 반응형으로 회피한다. Sentinel Swarm답게 **GPS 스푸핑을 공격으로 보고
+탐지→VIO 폴백**으로 연결해, 2단계가 5단계 보안 서사와 이어진다.
+
+### 위치추정 — VIO/GPS 융합 + GPS 무결성 모니터
+
+- **Kalman 융합** (`ekf.py`): 등속 모델 6-state 칼만 필터로 VIO·GPS 위치 융합.
+  ROS의 robot_localization EKF가 일반화하는 선형 코어를 numpy로 직접 구현.
+- **GPS 무결성 모니터** (`gps_monitor.py`): 각 GPS fix를 필터 예측과 비교(innovation).
+  정상 fix는 예측에 가깝고, 스푸핑/드리프트 fix는 벌어진다. innovation이 게이트를
+  연속 초과하면 GPS를 기각하고 **VIO 단독(GPS-denied) 모드로 폴백**한다. 히스테리시스
+  (trip/recover streak)로 단발 노이즈에 흔들리지 않는다 — 차량 CAN IDS의 타당성
+  게이트를 항법 센서에 적용한 것.
+- 모드는 `/drone/localization_status`(`LocalizationStatus`)로 발행: `GPS_FUSED` ↔ `GPS_DENIED`.
+
+### 회피 — 포텐셜 필드
+
+- **`potential_field.py`**: 목표로의 인력 + 장애물로부터의 척력을 합성한 속도 명령.
+  LaserScan 빔을 영향 반경 내 장애물로 변환해 반응형 회피. 도착 반경 안에선 정지.
+
+### 패키지
+
+| 패키지 | 역할 |
+|---|---|
+| `drone_interfaces` | `LocalizationStatus.msg` (GPS-denied/VIO 폴백 상태) |
+| `drone_localization` | Kalman VIO/GPS 융합 + GPS 스푸핑 모니터 |
+| `drone_avoidance` | 포텐셜 필드 반응형 회피 |
+
+### 토픽
+
+```text
+sub  /vio/odom (Odometry)   /gps/pose (PoseStamped)   /scan (LaserScan)
+pub  /drone/odom (Odometry)                 # 융합 추정
+pub  /drone/localization_status             # GPS_FUSED | GPS_DENIED
+pub  /drone/avoidance_cmd (TwistStamped)    # 회피 속도 명령
+```
+
+### 실행
+
+```bash
+# VIO/GPS/LaserScan 소스(PX4 SITL+Gazebo 또는 bag)가 떠 있는 상태에서
+ros2 launch drone_bringup phase2_navigation.launch.py goal_x:=8.0 goal_y:=2.0
+
+# GPS 스푸핑 폴백 관측
+ros2 topic echo /drone/localization_status
+```
+
+알고리즘 코어는 ROS 없이 단위 테스트된다 (칼만 융합·스푸핑 탐지·포텐셜 필드):
+
+```bash
+colcon test --packages-select drone_localization drone_avoidance
+```
+
+### Phase 1 연동 (closed loop)
+
+Phase 1 컨트롤러를 `use_avoidance:=true`로 띄우면 **위치추정 → 회피 → 비행**이
+한 루프로 닫힌다:
+
+```bash
+ros2 launch drone_bringup phase2_navigation.launch.py
+ros2 launch drone_bringup drone.launch.py mavros:=true use_avoidance:=true
+```
+
+- 컨트롤러는 현재 웨이포인트를 `/goal_pose`로 발행 → 회피 노드의 목표가 됨
+- 회피 노드는 장애물을 반영한 수평 속도를 `/drone/avoidance_cmd`로 발행
+- 컨트롤러는 그 수평 속도를 setpoint로 사용하고, 고도는 자체 PID로 유지
+
+> 상태 🟡: 필터·모니터·회피 코어는 구현·단위테스트(19건) 완료, Phase 1 연동 배선 완료.
+> VIO 소스 연동과 SITL 실연동 검증은 Humble + PX4 환경에서 수행 예정. (VIO 자체는
+> 상위 패키지/시뮬 제공, 본 노드는 `/vio/odom`을 소비)
 
 ---
 
