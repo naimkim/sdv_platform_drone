@@ -57,8 +57,9 @@ git push -u origin main
         │   ├── drone_offboard/       # Phase 1 — PID Offboard controller
         │   ├── drone_interfaces/     # Phase 2 — LocalizationStatus msg
         │   ├── drone_localization/   # Phase 2 — VIO/GPS fusion + GPS monitor
-        │   ├── drone_avoidance/      # Phase 2 — potential-field avoidance
-        │   └── drone_bringup/        # Phase 1/2 bringup launches
+        │   ├── drone_avoidance/      # Phase 2/3 — potential-field avoidance
+        │   ├── drone_perception/     # Phase 3 — YOLO detections -> obstacles
+        │   └── drone_bringup/        # Phase 1/2/3 bringup launches
         │
         ├── docs/
         │
@@ -424,3 +425,19 @@ ros2 launch drone_bringup drone.launch.py mavros:=true
 ros2 topic echo /mavros/state          # connected: true 확인
 ros2 topic echo /mavros/local_position/pose
 ```
+
+---
+
+# Phase 2 / 3 — 의존 패키지
+
+```bash
+# Phase 3 인지 브릿지가 소비하는 표준 탐지 메시지
+sudo apt install ros-humble-vision-msgs -y
+
+# (Phase 2/3 알고리즘은 numpy 사용)
+python3 -c "import numpy; print('numpy', numpy.__version__)"
+```
+
+YOLO 추론 노드(상위)는 `vision_msgs/Detection2DArray`를 `/detections`로 발행해야 한다.
+Jetson에서는 YOLO를 TensorRT 엔진으로 변환해 추론하고, 그 결과를 위 메시지로 publish하는
+구성을 권장한다. 본 저장소의 `drone_perception`은 그 탐지를 항법 장애물로 변환한다.

@@ -7,7 +7,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
-from geometry_msgs.msg import PoseStamped, TwistStamped
+from geometry_msgs.msg import PoseArray, PoseStamped, TwistStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
 
@@ -41,7 +41,8 @@ class AvoidanceNode(Node):
 
     Topics:
       sub  /drone/odom        (nav_msgs/Odometry)        current pose
-      sub  /scan              (sensor_msgs/LaserScan)    obstacles
+      sub  /scan              (sensor_msgs/LaserScan)    lidar obstacles
+      sub  /perception/obstacles (geometry_msgs/PoseArray) YOLO obstacles (world)
       sub  /goal_pose         (geometry_msgs/PoseStamped) optional goal update
       pub  /drone/avoidance_cmd (geometry_msgs/TwistStamped) velocity command
     """
@@ -57,7 +58,8 @@ class AvoidanceNode(Node):
         ])
 
         self.position = None        # (x, y)
-        self.obstacles = []         # list of (rel_x, rel_y)
+        self.scan_obstacles = []    # list of (rel_x, rel_y) from lidar
+        self.perception_world = []  # list of (world_x, world_y) from YOLO
 
         self.cmd_publisher = self.create_publisher(
             TwistStamped, '/drone/avoidance_cmd', 10)
@@ -67,6 +69,9 @@ class AvoidanceNode(Node):
             qos_profile_sensor_data)
         self.create_subscription(
             LaserScan, '/scan', self.scan_callback, qos_profile_sensor_data)
+        self.create_subscription(
+            PoseArray, '/perception/obstacles', self.perception_callback,
+            qos_profile_sensor_data)
         self.create_subscription(
             PoseStamped, '/goal_pose', self.goal_callback, 10)
 
@@ -98,7 +103,13 @@ class AvoidanceNode(Node):
             angle += msg.angle_increment
         # Keep the closest subset to bound the work per cycle.
         obstacles.sort(key=lambda o: o[0] * o[0] + o[1] * o[1])
-        self.obstacles = obstacles[:MAX_OBSTACLE_POINTS]
+        self.scan_obstacles = obstacles[:MAX_OBSTACLE_POINTS]
+
+    def perception_callback(self, msg):
+        # YOLO obstacles arrive in the world frame; store as-is and convert to
+        # drone-relative at command time (the drone keeps moving).
+        self.perception_world = [
+            (p.position.x, p.position.y) for p in msg.poses]
 
     # -- control loop ---------------------------------------------------
 
@@ -111,12 +122,20 @@ class AvoidanceNode(Node):
             self.publish_cmd(np.zeros(2))
             return
 
+        obstacles = self.combined_obstacles()
         velocity = avoidance_velocity(
-            goal_vec, self.obstacles,
+            goal_vec, obstacles,
             max_speed=MAX_SPEED, attract_gain=ATTRACT_GAIN,
             slow_radius=SLOW_RADIUS, influence_radius=INFLUENCE_RADIUS,
             repulse_gain=REPULSE_GAIN, min_clearance=MIN_CLEARANCE)
         self.publish_cmd(velocity)
+
+    def combined_obstacles(self):
+        """Merge lidar (already relative) and YOLO (world -> relative)."""
+        px, py = self.position
+        perception_rel = [
+            (wx - px, wy - py) for wx, wy in self.perception_world]
+        return self.scan_obstacles + perception_rel
 
     def publish_cmd(self, velocity):
         msg = TwistStamped()

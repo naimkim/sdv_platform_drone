@@ -23,7 +23,7 @@ GPS 없는 환경에서 카메라+IMU만으로 자기위치를 추정하고, Jet
 |---|---|---|:--:|
 | **1** | **ROS 2 + PX4 SITL + Gazebo 단일 드론 Offboard 비행** | **PID / Control** | 🟡 |
 | **2** | **VIO/EKF GPS-denied 위치추정 + 장애물 회피** | **VIO, GPS-Denied Nav** | 🟡 |
-| 3 | Jetson YOLO 실시간 추론(TensorRT) → 회피 경로 반영 | Object Detection, Jetson | ⬜ |
+| **3** | **Jetson YOLO 실시간 추론(TensorRT) → 회피 경로 반영** | **Object Detection, Jetson** | 🟡 |
 | 4 | Multi-drone 군집: DDS 위치 공유·영역 분배·충돌 회피 | Swarm Coordination | ⬜ |
 | **5** | **SROS2 인증 + IDS + Byzantine 합의 격리 (차별점)** | **Drone-to-Drone, 신뢰성** | ✅ |
 
@@ -31,7 +31,8 @@ GPS 없는 환경에서 카메라+IMU만으로 자기위치를 추정하고, Jet
 
 **5단계(보안 내성 레이어)를 먼저 구현**했다 — 군집 통신의 신뢰·인증·이상탐지가
 본 지원자의 본업 영역이고 가장 강한 차별점이기 때문이다. 이어서 **1단계(단일 드론
-Offboard 비행)**, **2단계(GPS-denied 위치추정 + 회피)** 를 구현했고, 3~4단계를 그 위에 올린다.
+Offboard 비행)**, **2단계(GPS-denied 위치추정 + 회피)**, **3단계(Jetson YOLO →
+회피 반영)** 를 구현했고, 4단계를 그 위에 올린다.
 
 > **기반 자산(Heritage).** 이 시스템은 백지에서 시작하지 않았다. 분산 ECU·상태머신·
 > 런타임 IDS·공격 노드를 갖춘 [ROS 2 SDV Fail-Safe Platform](#sdv-foundation)을
@@ -170,6 +171,51 @@ ros2 launch drone_bringup drone.launch.py mavros:=true use_avoidance:=true
 > 상태 🟡: 필터·모니터·회피 코어는 구현·단위테스트(19건) 완료, Phase 1 연동 배선 완료.
 > VIO 소스 연동과 SITL 실연동 검증은 Humble + PX4 환경에서 수행 예정. (VIO 자체는
 > 상위 패키지/시뮬 제공, 본 노드는 `/vio/odom`을 소비)
+
+---
+
+## Phase 3 — Jetson YOLO 인지 → 회피 반영 (코드 구현)
+
+Jetson에서 실시간 추론한 **YOLO 객체 탐지**를 항법에 반영한다. VIO와 같은 원칙으로,
+**YOLO+TensorRT 추론 자체는 상위 노드**가 `vision_msgs/Detection2DArray`로 발행하고,
+본 단계는 **탐지 → 항법 장애물로 변환하는 알고리즘 브릿지**(알고리즘 엔지니어가 실제로
+맡는 부분)에 집중한다.
+
+### 탐지 → 장애물 기하 변환
+
+- **`detection_geometry.py`** (핀홀 모델): 바운딩박스의 픽셀 열 → bearing, 박스 높이 →
+  거리(`distance = real_size · f / size_px`), 둘을 합쳐 상대 위치(전방 x, 좌 y, REP-103).
+- **`perception_node.py`**: `/detections`를 소비해 각 객체의 거리를 추정·투영하고, 융합
+  오도메트리(`/drone/odom`)로 월드 좌표로 변환해 `/perception/obstacles`(`PoseArray`)로 발행.
+  yaw=0 가정으로 body↔world ENU 정렬 (Phase 1/2와 동일).
+- **회피 연동**: `drone_avoidance`가 `/perception/obstacles`를 LaserScan 장애물과 **병합**해
+  포텐셜 필드에 함께 반영 → 탐지한 물체를 회피 경로에 즉시 반영.
+
+### 패키지
+
+| 패키지 | 역할 |
+|---|---|
+| `drone_perception` | YOLO `Detection2DArray` → 월드 장애물 `PoseArray` 변환 |
+
+### 실행
+
+```bash
+# 상위 YOLO 노드가 /detections (vision_msgs/Detection2DArray)를 발행하는 상태에서
+ros2 launch drone_bringup phase3_perception.launch.py hfov_deg:=86.0
+
+# Phase 2 항법(localization+avoidance)을 포함해 함께 기동됨
+ros2 topic echo /perception/obstacles
+```
+
+기하 변환 코어는 ROS 없이 단위 테스트된다:
+
+```bash
+colcon test --packages-select drone_perception
+```
+
+> 상태 🟡: 탐지→장애물 기하 코어는 구현·단위테스트(7건) 완료, 회피 병합 배선 완료.
+> YOLO+TensorRT 추론 노드 연동과 Jetson 온보드 실측은 실HW 단계. (추론 자체는 상위
+> 노드 제공, 본 노드는 `/detections`를 소비)
 
 ---
 
