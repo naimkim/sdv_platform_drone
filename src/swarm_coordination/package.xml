@@ -1,16 +1,13 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>swarm_agent</name>
+  <name>swarm_coordination</name>
   <version>0.0.0</version>
-  <description>Sentinel Swarm member: SecOC-authenticated pose broadcast and consensus-driven area allocation.</description>
+  <description>Swarm coordination algorithms: area allocation, coverage paths and inter-drone collision avoidance (Phase 4).</description>
   <maintainer email="naimkim1013@gmail.com">naimkim</maintainer>
   <license>Apache-2.0</license>
 
   <exec_depend>rclpy</exec_depend>
-  <exec_depend>swarm_interfaces</exec_depend>
-  <exec_depend>swarm_security</exec_depend>
-  <exec_depend>swarm_coordination</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

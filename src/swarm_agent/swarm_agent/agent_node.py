@@ -10,6 +10,8 @@ from swarm_interfaces.msg import SwarmStatus
 
 from swarm_security import secoc
 
+from swarm_coordination import allocation, collision, coverage
+
 
 # Node Config VARs
 DEBUG = False
@@ -21,15 +23,17 @@ ARRIVAL_RADIUS = 0.3        # m, considered "on station"
 SEPARATION_RADIUS = 1.0     # m, start avoiding peers
 SEPARATION_GAIN = 0.5
 AREA_SIZE = 10.0            # m, square search area side
+COVERAGE_SPACING = 2.0     # m, lawnmower pass spacing within a sector
 
 
 class DroneAgent(Node):
     """A single swarm member.
 
-    Broadcasts SecOC-authenticated pose/heartbeat, and derives its own search
-    sector deterministically from the consensus trusted set. When the consensus
-    guard quarantines a peer, the trusted set shrinks and every honest agent
-    re-divides the area without any extra coordination round.
+    Broadcasts SecOC-authenticated pose/heartbeat, derives its own search sector
+    deterministically from the consensus trusted set (Phase 4 coordination), and
+    flies a lawnmower coverage path through it while avoiding peers. When the
+    consensus guard quarantines a member, the trusted set shrinks and every
+    honest agent re-partitions and re-plans coverage with no extra round.
     """
 
     def __init__(self):
@@ -57,6 +61,11 @@ class DroneAgent(Node):
         self.freshness = self.get_clock().now().nanoseconds // 1_000_000
         self.trusted = [self.drone_id]
         self.peer_pose = {}
+
+        # Coverage state: regenerated when the trusted membership changes.
+        self.coverage_wps = []
+        self.cov_index = 0
+        self.cov_signature = None
 
         self.pose_publisher = self.create_publisher(
             SignedPose, '/swarm/pose', 10)
@@ -92,25 +101,28 @@ class DroneAgent(Node):
     # -- control loop ---------------------------------------------------
 
     def pose_tick(self):
-        target_x, target_y = self.assigned_sector_center()
+        self.update_coverage()
         dt = 1.0 / POSE_RATE_HZ
 
-        dx = target_x - self.x
-        dy = target_y - self.y
-        dist = math.hypot(dx, dy)
+        target = self.coverage_wps[self.cov_index]
+        dist = math.hypot(target[0] - self.x, target[1] - self.y)
+        if dist <= ARRIVAL_RADIUS:
+            # Loop through the sector's coverage path.
+            self.cov_index = (self.cov_index + 1) % len(self.coverage_wps)
+            target = self.coverage_wps[self.cov_index]
+            dist = math.hypot(target[0] - self.x, target[1] - self.y)
 
-        if dist > ARRIVAL_RADIUS:
-            ux, uy = dx / dist, dy / dist
+        if dist > 1e-6:
+            ux, uy = (target[0] - self.x) / dist, (target[1] - self.y) / dist
+            desired = (ux * MAX_SPEED, uy * MAX_SPEED)
         else:
-            ux, uy = 0.0, 0.0
+            desired = (0.0, 0.0)
 
-        ax, ay = self.separation_vector()
-        vx = ux * MAX_SPEED + ax
-        vy = uy * MAX_SPEED + ay
-
-        speed = math.hypot(vx, vy)
-        if speed > MAX_SPEED:
-            vx, vy = vx / speed * MAX_SPEED, vy / speed * MAX_SPEED
+        # Inter-drone collision avoidance (Phase 4 coordination library).
+        neighbors = list(self.peer_pose.values())
+        vx, vy = collision.avoid(
+            desired, (self.x, self.y), neighbors,
+            SEPARATION_RADIUS, SEPARATION_GAIN, MAX_SPEED)
 
         self.x += vx * dt
         self.y += vy * dt
@@ -118,30 +130,19 @@ class DroneAgent(Node):
 
         self.publish_pose()
 
-    def assigned_sector_center(self):
-        """Vertical-strip decomposition of the search area over trusted set."""
+    def update_coverage(self):
+        """Re-derive the sector and coverage path when membership changes."""
         members = self.trusted if self.drone_id in self.trusted \
             else self.trusted + [self.drone_id]
-        members = sorted(members)
-        n = max(1, len(members))
-        idx = members.index(self.drone_id)
+        signature = tuple(sorted(set(members)))
+        if signature == self.cov_signature and self.coverage_wps:
+            return
 
-        strip = AREA_SIZE / n
-        cx = strip * idx + strip / 2.0
-        cy = AREA_SIZE / 2.0
-        return cx, cy
-
-    def separation_vector(self):
-        ax, ay = 0.0, 0.0
-        for px, py in self.peer_pose.values():
-            dx = self.x - px
-            dy = self.y - py
-            dist = math.hypot(dx, dy)
-            if 0.0 < dist < SEPARATION_RADIUS:
-                weight = (SEPARATION_RADIUS - dist) / SEPARATION_RADIUS
-                ax += (dx / dist) * weight * SEPARATION_GAIN
-                ay += (dy / dist) * weight * SEPARATION_GAIN
-        return ax, ay
+        bounds = allocation.vertical_strip_bounds(
+            self.drone_id, members, AREA_SIZE)
+        self.coverage_wps = coverage.lawnmower(bounds, COVERAGE_SPACING)
+        self.cov_index = 0
+        self.cov_signature = signature
 
     # -- authenticated publishing --------------------------------------
 

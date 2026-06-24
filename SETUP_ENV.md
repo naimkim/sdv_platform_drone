@@ -47,6 +47,7 @@ git push -u origin main
         │   │
         │   ├── swarm_interfaces/     # Sentinel Swarm — Phase 5
         │   ├── swarm_security/       # SecOC-style MAC + freshness lib
+        │   ├── swarm_coordination/   # Phase 4 — allocation/coverage/collision
         │   ├── swarm_agent/          # authenticated swarm member
         │   ├── swarm_ids/            # swarm intrusion detection
         │   ├── swarm_consensus/      # Byzantine-resilient quarantine

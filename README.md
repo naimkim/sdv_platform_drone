@@ -24,7 +24,7 @@ GPS 없는 환경에서 카메라+IMU만으로 자기위치를 추정하고, Jet
 | **1** | **ROS 2 + PX4 SITL + Gazebo 단일 드론 Offboard 비행** | **PID / Control** | 🟡 |
 | **2** | **VIO/EKF GPS-denied 위치추정 + 장애물 회피** | **VIO, GPS-Denied Nav** | 🟡 |
 | **3** | **Jetson YOLO 실시간 추론(TensorRT) → 회피 경로 반영** | **Object Detection, Jetson** | 🟡 |
-| 4 | Multi-drone 군집: DDS 위치 공유·영역 분배·충돌 회피 | Swarm Coordination | ⬜ |
+| **4** | **Multi-drone 군집: DDS 위치 공유·영역 분배·충돌 회피** | **Swarm Coordination** | ✅ |
 | **5** | **SROS2 인증 + IDS + Byzantine 합의 격리 (차별점)** | **Drone-to-Drone, 신뢰성** | ✅ |
 
 > ✅ 구현·검증 완료 · 🟡 코드 구현 (PX4 SITL 통합 검증 전) · ⬜ 예정
@@ -32,7 +32,7 @@ GPS 없는 환경에서 카메라+IMU만으로 자기위치를 추정하고, Jet
 **5단계(보안 내성 레이어)를 먼저 구현**했다 — 군집 통신의 신뢰·인증·이상탐지가
 본 지원자의 본업 영역이고 가장 강한 차별점이기 때문이다. 이어서 **1단계(단일 드론
 Offboard 비행)**, **2단계(GPS-denied 위치추정 + 회피)**, **3단계(Jetson YOLO →
-회피 반영)** 를 구현했고, 4단계를 그 위에 올린다.
+회피 반영)**, **4단계(다중 드론 군집 좌표화)** 까지 구현해 1→5단계가 한 시스템으로 꿰인다.
 
 > **기반 자산(Heritage).** 이 시스템은 백지에서 시작하지 않았다. 분산 ECU·상태머신·
 > 런타임 IDS·공격 노드를 갖춘 [ROS 2 SDV Fail-Safe Platform](#sdv-foundation)을
@@ -216,6 +216,49 @@ colcon test --packages-select drone_perception
 > 상태 🟡: 탐지→장애물 기하 코어는 구현·단위테스트(7건) 완료, 회피 병합 배선 완료.
 > YOLO+TensorRT 추론 노드 연동과 Jetson 온보드 실측은 실HW 단계. (추론 자체는 상위
 > 노드 제공, 본 노드는 `/detections`를 소비)
+
+---
+
+## Phase 4 — 다중 드론 군집 좌표화 (구현 완료)
+
+여러 드론이 정사각형 탐색 영역을 **분배**하고 각자 **lawnmower 커버리지 경로**로
+탐색하며, DDS로 위치를 공유하고 서로 **충돌을 회피**한다. 순수 ROS 2 / DDS로 동작해
+PX4 없이 시연 가능하다. **4단계는 군집 좌표화, 5단계는 그 위에 얹는 보안**이라는 층
+구조다 — 5단계의 `swarm_agent`/`swarm_consensus`가 사용하던 좌표화 로직을 테스트 가능한
+라이브러리로 분리해 4단계로 정식화했다.
+
+### 좌표화 알고리즘 (`swarm_coordination`, 라이브러리)
+
+- **영역 분배** (`allocation.py`): 신뢰 집합을 받아 각 드론이 동일 함수로 **결정론적·
+  서로소** 분할을 도출 — 추가 합의 라운드 없이 일관된 분배. 멤버가 빠지거나 격리되면
+  영역이 자동 재분할. (수직 스트립 + 근정사각 그리드)
+- **커버리지 경로** (`coverage.py`): 할당된 셀을 boustrophedon(lawnmower) 패스로 덮는
+  웨이포인트 생성 — 호버가 아니라 실제로 영역을 "탐색".
+- **충돌 회피** (`collision.py`): 분리 반경 내 이웃으로부터 반발 속도를 더해 최소 간격
+  유지. 모든 드론이 대칭으로 적용 → 사실상 상호(reciprocal) 회피.
+
+### 통합
+
+`swarm_agent`가 이 라이브러리를 사용하도록 리팩터됨: 신뢰 집합 → 섹터 분배 →
+커버리지 경로 추종 → 충돌 회피 속도. 멤버십이 바뀌면 섹터·경로를 자동 재생성한다.
+
+### 실행
+
+```bash
+# 4대 군집이 영역을 나눠 탐색 (RViz로 관측)
+ros2 launch swarm_bringup swarm_coordination.launch.py drones:=4 viz:=true
+
+# 멤버 수를 바꿔 좌표화 스케일 관측
+ros2 launch swarm_bringup swarm_coordination.launch.py drones:=6 viz:=true
+```
+
+좌표화 알고리즘은 ROS 없이 단위 테스트된다 (분배·커버리지·충돌, 12건):
+
+```bash
+colcon test --packages-select swarm_coordination
+```
+
+> 상태 ✅: 순수 ROS 2/DDS로 동작·시연 가능. 알고리즘 12건 단위 테스트 + 통합 실행.
 
 ---
 
