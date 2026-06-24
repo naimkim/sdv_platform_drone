@@ -7,6 +7,12 @@ GPS 없는 환경에서 카메라+IMU만으로 자기위치를 추정하고, Jet
 객체를 인식하며, 서로 통신해 탐색 영역을 나누는 드론 군집. **단, 통신 계층에
 인증·침입탐지를 넣어 스푸핑/악성 노드가 있어도 군집이 무너지지 않는다.**
 
+![Sentinel Swarm overview](docs/images/sentinel_swarm_overview.png)
+
+<sub>왼쪽: 4드론이 탐색 영역을 자동 분할해 lawnmower 경로로 커버 (Phase 4). 오른쪽:
+그룹키를 가진 내부자(drone_3)가 텔레포트 공격 → IDS가 탐지 → consensus가 격리,
+신뢰 집합이 [drone_1, drone_2]로 재구성 (Phase 5). 실제 좌표화 알고리즘으로 렌더링.</sub>
+
 이 프로젝트의 차별점은 SLAM/YOLO 자체가 아니라 — 그건 누구나 한다 —
 **「보안·안전(ISO 21434, SecOC, CAN IDS)을 아는 자율비행 엔지니어」** 라는
 조합이다. 차량 보안에서 쓰던 SecOC 메시지 인증과 침입탐지(IDS)를 실제 ROS 2
